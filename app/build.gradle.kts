@@ -41,6 +41,19 @@ android {
         buildConfig = true
     }
 
+    buildTypes {
+        release {
+            // Personal-app pattern (see CLAUDE.md): sign release with the
+            // debug keystore — a real production keystore would be
+            // infrastructure without payoff for a single-device install.
+            signingConfig = signingConfigs.getByName("debug")
+            // Minification disabled until the Spotify App Remote SDK's
+            // reflection-heavy surface is covered by ProGuard keep rules.
+            // See README "v1-Polish, bewusst nicht im Skelett".
+            isMinifyEnabled = false
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

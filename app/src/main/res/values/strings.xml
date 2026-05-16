@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">B2B</string>
+    <string name="playback_channel_name">Playback orchestrator</string>
+    <string name="playback_channel_description">Keeps the queue filled with whitelisted artists</string>
+    <string name="notif_idle_no_device">Open Spotify to start session</string>
+    <string name="notif_running">Keeping Spotify on your artists</string>
+    <string name="notif_free_tier">Spotify Premium required for queue control</string>
+</resources>

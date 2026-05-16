@@ -29,25 +29,33 @@ interface SpotifyApi {
     @GET("v1/me")
     suspend fun me(): Response<UserProfileDto>
 
+    // `limit` is intentionally nullable with a null default on these
+    // endpoints: Spotify's "Development Mode" (the default for new dev-app
+    // registrations post-2024-11-27) rejects explicit limit values that
+    // are perfectly legal in the public docs ("Invalid limit"). Skipping
+    // the query param entirely makes Spotify fall back to its server-side
+    // default, which Dev Mode does accept. Pagination still works because
+    // the response carries `limit` in the page envelope.
+
     @GET("v1/search")
     suspend fun searchArtists(
         @Query("q") query: String,
         @Query("type") type: String = "artist",
-        @Query("limit") limit: Int = 20,
+        @Query("limit") limit: Int? = null,
     ): Response<ArtistSearchResponseDto>
 
     @GET("v1/artists/{id}/albums")
     suspend fun artistAlbums(
         @Path("id") artistId: String,
         @Query("include_groups") includeGroups: String = "album,single",
-        @Query("limit") limit: Int = 50,
+        @Query("limit") limit: Int? = null,
         @Query("offset") offset: Int = 0,
     ): Response<PagedResponseDto<AlbumDto>>
 
     @GET("v1/albums/{id}/tracks")
     suspend fun albumTracks(
         @Path("id") albumId: String,
-        @Query("limit") limit: Int = 50,
+        @Query("limit") limit: Int? = null,
         @Query("offset") offset: Int = 0,
     ): Response<PagedResponseDto<TrackDto>>
 

@@ -2,6 +2,7 @@ package com.github.reygnn.b2b
 
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.BackoffPolicy
 import androidx.work.Configuration
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -37,6 +38,11 @@ class B2BApp : Application(), Configuration.Provider {
                     .setRequiredNetworkType(NetworkType.UNMETERED)
                     .build()
             )
+            // 5-minute initial backoff so a transient Spotify hiccup (or
+            // a 429 with too-long Retry-After surfaced as Result.retry())
+            // doesn't make us re-hit the API every 30 s and reinforce
+            // whatever rate-limit caused it. See PoolSyncWorker.
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
             .build()
         // KEEP: if a periodic sync is already enqueued (e.g. across process
         // restarts), don't reset its schedule. The unique name guarantees a

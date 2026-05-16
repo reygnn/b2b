@@ -3,9 +3,11 @@ package com.github.reygnn.b2b.ui.settings
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.BackoffPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.data.auth.TokenStore
 import com.github.reygnn.b2b.work.PoolSyncWorkNames
@@ -36,7 +38,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun manualSync() {
-        val request = OneTimeWorkRequestBuilder<PoolSyncWorker>().build()
+        val request = OneTimeWorkRequestBuilder<PoolSyncWorker>()
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
+            .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             PoolSyncWorkNames.MANUAL,
             ExistingWorkPolicy.REPLACE,

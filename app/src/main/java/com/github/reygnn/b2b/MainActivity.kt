@@ -7,9 +7,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.core.content.ContextCompat
+import com.github.reygnn.b2b.ui.theme.B2BTheme
 import androidx.lifecycle.lifecycleScope
 import com.github.reygnn.b2b.data.auth.AuthEvent
 import com.github.reygnn.b2b.data.auth.AuthEventBus
@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            B2BTheme {
                 Surface { AppNavHost() }
             }
         }

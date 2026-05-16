@@ -8,11 +8,16 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**End-to-End komplett, noch nicht auf einem Gerät validiert.** Alle
-Skelett-Lücken sind implementiert: PKCE-OAuth (Exchange + Refresh) gegen
-`accounts.spotify.com`, Periodic + One-Shot `PoolSyncWorker`, Compose-UI
-(Login → Whitelist → Settings) inklusive Service-Toggle, App-Remote-SDK-
-Integration via `AppRemotePlayerStateSource`. Suite: 49 Unit-Tests
+**Real-Device-validiert, Version 0.21.** End-to-End-Push beobachtet:
+Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b den
+nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
+(Exchange + Refresh) gegen `accounts.spotify.com`, Periodic + One-Shot
++ Manual `PoolSyncWorker` mit Pagination-Safeguards und 10-min-Timeout,
+Compose-UI (Login → Whitelist → Settings → Logs) mit Status-Karte,
+Track-Position-Countdown, Skip-Button für den Vorschau-Pick, in-App-
+Log-Viewer (500 Zeilen). App-Remote-SDK-Integration via
+`AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-
+Dynamic-Color folgt System-Dark-Mode. Suite: ~84 Unit-Tests
 (JUnit + MockK + Turbine + MockWebServer + Robolectric). Build clean,
 keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
 
@@ -60,7 +65,11 @@ keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
 ## Bedienung
 
 1. App starten → Login-Screen → "Sign in with Spotify" → Custom Tab
-   öffnet sich → User authentifiziert sich.
+   öffnet sich → User authentifiziert sich. Scopes: `app-remote-control`,
+   `user-modify-playback-state`, `user-read-playback-state`,
+   `user-read-currently-playing`, `user-read-private` (letzterer ist
+   nötig, damit `/me` das `product`-Feld liefert — sonst sieht b2b
+   jeden Account als Free-Tier).
 2. Spotify-Redirect `b2b://callback?code=...` landet via Intent-Filter
    in `MainActivity`, das den Code via `PkceAuthManager` einlöst.
    Tokens sind verschlüsselt in `EncryptedSharedPreferences`.
@@ -69,14 +78,30 @@ keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
 4. Artists suchen (mit 300 ms Debounce) und zur Whitelist hinzufügen.
    Jede Add-Operation triggert einen One-Shot `PoolSyncWorker`
    (`KEEP`-Policy → mehrere schnelle Adds coalescen zu einem Lauf).
+   Remove löscht die zugehörigen Tracks sofort lokal aus dem Pool.
 5. "Start session" → `PlaybackOrchestratorService` startet als
    Foreground, verbindet sich via App Remote mit der lokalen Spotify-
-   Instanz, beobachtet `PlayerState`. Bei <15 s Restzeit des aktuellen
-   Tracks wird der nächste Track aus dem Pool in die Spotify-Queue
-   geschoben. Pro Track-URI feuert das genau einmal (Per-Track-Latch).
-6. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane)
-   und "Sign out" (`TokenStore.clear()` → Nav-Graph routet zurück zu
-   Login).
+   Instanz, beobachtet `PlayerState`. Position-basierter Timer:
+   `delay(durationMs - positionMs - 15_000)` arms pro Track-Event, beim
+   Ablauf wird der nächste Pool-Track in Spotifys Queue geschoben.
+   Pro Track-URI feuert das genau einmal (Per-Track-Latch).
+6. **Status-Karte** auf dem Whitelist-Screen rendert live:
+   - aktueller `OrchestratorStatus` (`Currently:` / `✓ Last enqueued:` /
+     `⚠ Spotify: <reason>` / `Not started`)
+   - `Next: <Track> — <Artist> ↻` — der vorgemerkte Pool-Pick, der
+     beim nächsten Trigger gepusht wird. Tap auf `↻` zieht einen
+     frischen Random aus dem Pool, ohne Anti-Repeat zu verbrauchen.
+   - `Track: 1:23 / 3:45 · Next push in 0:42` — Position aus dem
+     letzten SDK-Event extrapoliert (1 Hz Tick), Countdown bis
+     Trigger.
+   - `Pool: N tracks · last sync 3h ago` bzw. `Syncing now…` während
+     ein `PoolSyncWorker` läuft.
+7. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane),
+   "Cancel running sync" (Notausgang falls ein Worker hängt — ruft
+   `WorkManager.cancelUniqueWork` auf alle drei Lanes), "View logs"
+   (500-Zeilen-Ring-Buffer mit `[HH:mm:ss] message` pro Eintrag,
+   markierbar/kopierbar), "Sign out" (`TokenStore.clear()` → Nav-Graph
+   routet zurück zu Login).
 
 ## Architektur
 
@@ -103,18 +128,30 @@ layer boundaries.
 Hintergrund:
 
 - `PoolSyncWorker` (WorkManager): periodisch alle 24 h auf UNMETERED
-  Network sowie One-Shot nach Whitelist-Änderungen. Walks die
-  Whitelist → `/artists/{id}/albums` → `/albums/{id}/tracks` → upsert
-  in `pool_track`. Bei HTTP 429 ehrt der Worker den `Retry-After`-Header
-  per `delay()` innerhalb desselben Runs (bis zu 3 Versuche pro Artist),
-  statt sofort an WorkManagers Backoff abzugeben.
+  Network, One-Shot nach Whitelist-Add, Manual via Settings. Walks die
+  Whitelist → `/artists/{id}/albums` → `/albums/{id}/tracks`, filtert
+  Tracks ohne den angefragten Artist aus (Compilations / Various-
+  Artists-Releases liefern sonst Fremd-Tracks), löscht den Pool-Slice
+  des Artists und upsertet die frischen Tracks. Hard caps gegen Endlos-
+  Pagination (max 100 Album-Pages, max 20 Track-Pages pro Album, plus
+  Break bei `limit == 0` aus pathologischen Dev-Mode-Responses). 10-min-
+  Worker-Timeout als letzte Verteidigungslinie. Bei HTTP 429 mit
+  Retry-After ≤ 120 s wird in-run `delay()`-gewartet (max 3 Versuche
+  pro Artist); größere Werte werden an WorkManager-Backoff
+  (5-min EXPONENTIAL initial, max 5 h) übergeben, damit wir Spotify
+  nicht weiter hämmern und eine bestehende Penalty verlängern.
 - `PlaybackOrchestratorService` (Foreground, `mediaPlayback`): hostet
   den `PlaybackOrchestrator` (pure Kotlin, testbar ohne Android), der
   einen `Flow<PlayerState>` aus `PlayerStateSource` konsumiert und
-  Enqueue-Entscheidungen trifft. Per-Track-Latch verhindert mehrfaches
-  Feuern bei den ~mehrere-Hz-PlayerState-Updates pro Track. Spotify-
-  App-Remote-SDK-Zugriff lebt ausschließlich in
-  `AppRemotePlayerStateSource`.
+  Enqueue-Entscheidungen trifft. **Position-extrapolierter Timer**:
+  App-Remote-SDK emittiert nicht periodisch, daher pro State-Event
+  `delay(durationMs - positionMs - TRIGGER_MS)` armed, jedes neue
+  Event cancelt + re-armt. Per-Track-Latch als Defense-in-Depth.
+  Vorgemerkter Pick wird im `PreviewTrackHolder` für die UI publik
+  gemacht; `skipPreview()` ersetzt ihn ohne Anti-Repeat zu touchen.
+  Spotify-App-Remote-SDK-Zugriff lebt ausschließlich in
+  `AppRemotePlayerStateSource` — pinned via `flowOn(MainDispatcher)`,
+  weil das SDK intern `Handler()` ohne expliziten Looper instanziiert.
 
 ## Spotify-API-Constraints
 
@@ -157,29 +194,37 @@ Beispiel-Tests:
 ```
 app/src/main/java/com/github/reygnn/b2b/
 ├── B2BApp.kt                Hilt-Entry, WorkManager-Config, schedules
-│                            periodische PoolSync
+│                            periodische PoolSync (mit 5-min Backoff)
 ├── MainActivity.kt          Compose-Host, OAuth-Callback-Handler
 ├── di/                      Hilt-Module + Dispatcher-/Account-Qualifier
+├── diagnostics/             LogSink + LogBuffer (500-Eintrag-Ring)
 ├── domain/                  Modelle, Repository-Interfaces, UseCases (rein)
 ├── data/
 │   ├── remote/              Retrofit-APIs (SpotifyApi + SpotifyAccountsApi),
 │   │                        DTOs, AuthInterceptor
 │   ├── local/               Room (Entities, DAOs, AppDatabase)
 │   ├── auth/                PKCE + TokenStore + AuthEventBus
-│   └── repository/          Implementierungen + PoolSyncTrigger
-├── work/                    PoolSyncWorker
+│   └── repository/          Impls + PoolSyncTrigger/Observer
+├── work/                    PoolSyncWorker + PoolSyncWorkNames
 ├── service/                 PlaybackOrchestratorService + ServiceState
-├── playback/                PlaybackOrchestrator (pure logic) +
+├── playback/                PlaybackOrchestrator (pure logic, position-
+│                            extrapolierter Timer) +
 │                            PlayerStateSource (interface) +
-│                            AppRemotePlayerStateSource (SDK-backed) +
-│                            PlayerState, OrchestratorStatus
+│                            AppRemotePlayerStateSource (SDK-backed,
+│                            Main-Looper-pinned) + PlayerState,
+│                            OrchestratorStatus +
+│                            OrchestratorStatusHolder, PlayerStateHolder,
+│                            PreviewTrackHolder (UI-Bus-Singletons)
 └── ui/
     ├── AppViewModel.kt      Top-level (Auth-State)
-    ├── nav/AppNavHost.kt    Login ↔ Whitelist ↔ Settings + Auth-Gating
+    ├── theme/B2BTheme.kt    Material You dynamic color, system dark/light
+    ├── nav/AppNavHost.kt    Login ↔ Whitelist ↔ Settings ↔ Logs
     ├── login/               LoginScreen + ViewModel
-    ├── whitelist/           WhitelistScreen + ViewModel (Search-Debounce,
-    │                        Service-Toggle)
-    └── settings/            SettingsScreen + ViewModel (Logout + Manual-Sync)
+    ├── whitelist/           WhitelistScreen + ViewModel (Status-Karte,
+    │                        Search-Debounce, Service-Toggle, Skip-Pick)
+    ├── settings/            SettingsScreen + ViewModel (Manual-Sync,
+    │                        Cancel-Sync, View-Logs, Logout)
+    └── logs/                LogScreen + ViewModel (selektierbarer Text)
 ```
 
 ## Out of Scope
@@ -193,14 +238,20 @@ app/src/main/java/com/github/reygnn/b2b/
   `spotify-auth*.aar` aus dem SDK-Zip liegen lokal außerhalb des Repos
   unter `spotify/`, falls dieser Wechsel später erwünscht ist)
 
-## v1-Polish, bewusst nicht im Skelett
+## Offene Polish-Punkte
 
-- Anti-Repeat-Window über UI konfigurierbar (DataStore-Preferences-Repo)
-- Proaktiver Token-Refresh vor `expiresAtEpochMs` statt 401-then-refresh
-- AppRemote-Reconnect-Retry bei verlorener Verbindung
-- Premium-Status-Caching (aktuell `/me`-Call pro Enqueue)
-- Release-Signing-Konfiguration + ProGuard-Regeln für die Spotify-SDK
-- Room-Migration-Setup (`exportSchema = true` + `room.schemaLocation`)
+- Anti-Repeat-Window über UI konfigurierbar (DataStore-Preferences-Repo) —
+  aktuell konstant 50 im Service.
+- Proaktiver Token-Refresh vor `expiresAtEpochMs` statt 401-then-refresh.
+- AppRemote-Reconnect-Retry bei verlorener Verbindung — der
+  Orchestrator emittiert `SpotifyUnavailable` und der `run`-Loop endet;
+  Service bleibt foreground aber tut nichts mehr bis User stop+start.
+- Premium-Status-Caching (aktuell `/me`-Call pro Enqueue, jedes Mal
+  ein HTTP-Round-Trip).
+- Release-Signing-Konfiguration + ProGuard-Regeln für die Spotify-SDK.
+- Room-Migration-Setup (`exportSchema = true` + `room.schemaLocation`).
+- Bias-Pick: aktuell uniform random aus dem ganzen Pool. „Stay with the
+  current artist" o.ä. wäre denkbar — aktuell intentional uniform.
 
 ## ADRs
 

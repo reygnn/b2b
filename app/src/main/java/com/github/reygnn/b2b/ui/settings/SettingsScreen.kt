@@ -50,6 +50,13 @@ fun SettingsScreen(
             }
 
             OutlinedButton(
+                onClick = { vm.cancelSync() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_cancel_sync))
+            }
+
+            OutlinedButton(
                 onClick = { vm.logout() },
                 modifier = Modifier.fillMaxWidth(),
             ) {

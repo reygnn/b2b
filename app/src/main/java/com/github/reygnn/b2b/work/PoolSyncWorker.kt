@@ -11,6 +11,8 @@ import com.github.reygnn.b2b.domain.repository.PoolRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Periodic sync: walk every whitelisted artist, fetch all album tracks, upsert
@@ -37,7 +39,18 @@ class PoolSyncWorker @AssistedInject constructor(
     private val whitelistDao: WhitelistDao,
 ) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result =
+        // Last-resort cap so a runaway sync can never leave the worker stuck
+        // in RUNNING forever — the symptom that triggered this fix: 1 h
+        // "Syncing now…" because the fetchAllTrackUrisForArtist pagination
+        // loop didn't terminate. With the per-artist + per-album safeguards
+        // in ArtistRepositoryImpl this should never fire, but if Spotify
+        // throttles us with 30 s delays across many artists we still want
+        // a deterministic ceiling. On timeout: hand off to WorkManager's
+        // exponential backoff via Result.retry().
+        withTimeoutOrNull(MAX_RUN_DURATION) { runSync() } ?: Result.retry()
+
+    private suspend fun runSync(): Result {
         val artistIds = whitelistDao.allIds()
         if (artistIds.isEmpty()) {
             poolRepo.deleteTracksForRemovedArtists(emptySet())
@@ -77,5 +90,11 @@ class PoolSyncWorker @AssistedInject constructor(
 
     private companion object {
         const val MAX_RATE_LIMIT_ATTEMPTS = 3
+
+        // 10 minutes is generous for a few artists with normal-sized
+        // discographies even when Spotify is rate-limiting (each 429
+        // burns up to 30 s). Beyond this it's not throttling — it's
+        // pathology, and we'd rather hand off to WorkManager retry.
+        val MAX_RUN_DURATION = 10.minutes
     }
 }

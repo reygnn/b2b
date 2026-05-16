@@ -44,4 +44,16 @@ class SettingsViewModel @Inject constructor(
         )
         _toastEvents.trySend(R.string.sync_enqueued)
     }
+
+    /**
+     * Cancels any in-flight or queued sync across all three lanes
+     * (periodic / after-whitelist / manual). Escape hatch when a sync gets
+     * stuck — without this, the only options were "wait", `adb shell cmd
+     * jobscheduler cancel …" or "clear app data".
+     */
+    fun cancelSync() {
+        val wm = WorkManager.getInstance(context)
+        PoolSyncWorkNames.ALL.forEach { wm.cancelUniqueWork(it) }
+        _toastEvents.trySend(R.string.sync_cancelled)
+    }
 }

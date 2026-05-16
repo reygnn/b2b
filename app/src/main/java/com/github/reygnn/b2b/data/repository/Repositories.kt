@@ -125,7 +125,14 @@ class ArtistRepositoryImpl @Inject constructor(
             try {
                 val tracks = mutableListOf<Track>()
                 var offset = 0
+                var albumPagesSeen = 0
                 while (true) {
+                    // Hard safety break: bail out if pagination doesn't
+                    // terminate. Real Spotify artists max out around a few
+                    // hundred albums; we've seen Dev-Mode responses with a
+                    // non-null `next` plus `limit == 0` that loop forever
+                    // because offset never advances. (1 h hung sync, 2026-05-16.)
+                    if (++albumPagesSeen > MAX_ALBUM_PAGES) break
                     val albumsResp = api.artistAlbums(artistId, offset = offset)
                     if (!albumsResp.isSuccessful) return@withContext albumsResp.toOutcome { _ ->
                         emptyList<Track>()
@@ -133,7 +140,9 @@ class ArtistRepositoryImpl @Inject constructor(
                     val page = albumsResp.body() ?: break
                     for (album in page.items) {
                         var trackOffset = 0
+                        var trackPagesSeen = 0
                         while (true) {
+                            if (++trackPagesSeen > MAX_TRACK_PAGES_PER_ALBUM) break
                             val tracksResp = api.albumTracks(album.id, offset = trackOffset)
                             if (!tracksResp.isSuccessful) return@withContext tracksResp.toOutcome { _ ->
                                 emptyList<Track>()
@@ -162,10 +171,15 @@ class ArtistRepositoryImpl @Inject constructor(
                                 )
                             }
                             if (trackPage.next == null) break
+                            // Spotify's Dev-Mode has been observed returning
+                            // `limit: 0` on paged endpoints; `+= 0` would
+                            // loop on the same offset forever. Bail out.
+                            if (trackPage.limit <= 0) break
                             trackOffset += trackPage.limit
                         }
                     }
                     if (page.next == null) break
+                    if (page.limit <= 0) break
                     offset += page.limit
                 }
                 Outcome.Success(tracks)
@@ -173,6 +187,14 @@ class ArtistRepositoryImpl @Inject constructor(
                 Outcome.Error.Network
             }
         }
+
+    private companion object {
+        // Generous ceilings: more albums or per-album tracks than any real
+        // artist has. Exists only so a pathological API response doesn't
+        // pin the worker in `RUNNING` indefinitely.
+        const val MAX_ALBUM_PAGES = 100        // ~5000 albums
+        const val MAX_TRACK_PAGES_PER_ALBUM = 20 // ~1000 tracks per album
+    }
 }
 
 @Singleton

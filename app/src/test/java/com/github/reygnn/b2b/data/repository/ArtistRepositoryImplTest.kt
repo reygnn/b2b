@@ -218,6 +218,41 @@ class ArtistRepositoryImplTest {
             assertThat(result).isEqualTo(Outcome.Error.RateLimited(retryAfterSeconds = 12))
         }
 
+    @Test fun `fetchAllTrackUrisForArtist breaks pagination when limit is zero`() =
+        runTest(mainRule.testScheduler) {
+            // Pathological Spotify Dev-Mode response: `next` is non-null
+            // (so the outer break-on-next doesn't catch it) AND `limit` is
+            // 0 (so offset would never advance). Without the safety break,
+            // this loops forever — the symptom that left an hour-long
+            // "Syncing now…" stuck on the device. With the break, we exit
+            // cleanly after one page.
+            server.enqueue(
+                MockResponse().setBody(
+                    """
+                    {"items":[{"id":"alb1","name":"A","uri":"spotify:album:alb1","album_type":"album","total_tracks":1}],
+                     "next":"http://infinite","limit":0,"offset":0,"total":99999}
+                    """.trimIndent()
+                )
+            )
+            server.enqueue(
+                MockResponse().setBody(
+                    """
+                    {"items":[
+                        {"id":"t1","name":"Track","uri":"spotify:track:t1","duration_ms":1000,
+                         "artists":[{"id":"art1","name":"Artist"}]}
+                    ],"next":null,"limit":50,"offset":0,"total":1}
+                    """.trimIndent()
+                )
+            )
+
+            val result = sut.fetchAllTrackUrisForArtist("art1")
+
+            assertThat(result).isInstanceOf(Outcome.Success::class.java)
+            // One album walked, one track collected, then break — would
+            // otherwise hang forever.
+            assertThat(server.requestCount).isEqualTo(2)
+        }
+
     @Test fun `addToWhitelist persists entity and triggers one-shot sync`() =
         runTest(mainRule.testScheduler) {
             val captured = slot<WhitelistedArtistEntity>()

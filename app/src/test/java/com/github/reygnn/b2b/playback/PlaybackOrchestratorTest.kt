@@ -32,6 +32,7 @@ class PlaybackOrchestratorTest {
     private val playback: PlaybackRepository = mockk()
     private val recents: RecentlyPlayedRepository = mockk(relaxUnitFun = true)
     private val playerStateHolder = PlayerStateHolder()
+    private val previewHolder = PreviewTrackHolder()
 
     private val playerStates = MutableSharedFlow<PlayerState>(
         extraBufferCapacity = 16,
@@ -41,7 +42,9 @@ class PlaybackOrchestratorTest {
         override fun states(): Flow<PlayerState> = playerStates
     }
 
-    private val sut = PlaybackOrchestrator(source, pickNext, playback, recents, playerStateHolder)
+    private val sut = PlaybackOrchestrator(
+        source, pickNext, playback, recents, playerStateHolder, previewHolder,
+    )
 
     @Before fun stubHappyPath() {
         coEvery { playback.isPremium() } returns Outcome.Success(true)
@@ -400,6 +403,104 @@ class PlaybackOrchestratorTest {
             advanceTimeBy(200_000)
             runCurrent()
             coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+            job.cancel()
+        }
+
+    @Test fun `pre-picks next track on track change and exposes via preview holder`() =
+        runTest(mainRule.testScheduler) {
+            val expected = trackOf("spotify:track:next")
+            coEvery { pickNext(50) } returns Outcome.Success(expected)
+
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 5_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            runCurrent()
+
+            assertThat(previewHolder.track.value).isEqualTo(expected)
+            coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+            job.cancel()
+        }
+
+    @Test fun `enqueue clears the preview holder on success`() =
+        runTest(mainRule.testScheduler) {
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+
+            coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+            assertThat(previewHolder.track.value).isNull()
+            job.cancel()
+        }
+
+    @Test fun `skipPreview replaces the pending pick`() =
+        runTest(mainRule.testScheduler) {
+            val firstPick = trackOf("spotify:track:first")
+            val secondPick = trackOf("spotify:track:second")
+            coEvery { pickNext(50) } returnsMany listOf(
+                Outcome.Success(firstPick),
+                Outcome.Success(secondPick),
+            )
+
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            // Mid-track event → pre-pick fires once, sets firstPick.
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 5_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            runCurrent()
+            assertThat(previewHolder.track.value).isEqualTo(firstPick)
+
+            sut.skipPreview()
+            runCurrent()
+            assertThat(previewHolder.track.value).isEqualTo(secondPick)
+            coVerify(exactly = 2) { pickNext(50) }
+            job.cancel()
+        }
+
+    @Test fun `skipPreview is a no-op when nothing is pending`() =
+        runTest(mainRule.testScheduler) {
+            // run() never called → currentAntiRepeatWindow is the default
+            // and pendingPick is null.
+            sut.skipPreview()
+            runCurrent()
+
+            coVerify(exactly = 0) { pickNext(any()) }
+            assertThat(previewHolder.track.value).isNull()
+        }
+
+    @Test fun `enqueue uses the pre-picked track from preview, not a fresh pickNext`() =
+        runTest(mainRule.testScheduler) {
+            val prePicked = trackOf("spotify:track:pre-picked")
+            coEvery { pickNext(50) } returns Outcome.Success(prePicked)
+
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+
+            // pickNext called exactly once — during the Listening pre-pick;
+            // enqueueOnce reused the result from the holder, did not pick again.
+            coVerify(exactly = 1) { pickNext(50) }
+            coVerify(exactly = 1) { playback.enqueue(prePicked.uri, any()) }
             job.cancel()
         }
 

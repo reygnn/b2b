@@ -21,6 +21,11 @@
     <string name="service_running">Session running</string>
 
     <!-- Status card -->
+    <string name="next_label">Next</string>
+    <string name="next_pick">%1$s — %2$s</string>
+    <string name="skip_next_glyph">↻</string>
+    <string name="skip_next_content_description">Skip next pick</string>
+
     <string name="status_label">Status</string>
     <string name="status_idle">Not started</string>
     <string name="status_running">Waiting for Spotify…</string>

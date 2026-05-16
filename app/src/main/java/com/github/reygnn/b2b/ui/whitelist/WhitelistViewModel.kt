@@ -5,12 +5,15 @@ import androidx.lifecycle.viewModelScope
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
+import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
 import com.github.reygnn.b2b.playback.OrchestratorStatusSnapshot
+import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateHolder
 import com.github.reygnn.b2b.playback.PlayerStateSnapshot
+import com.github.reygnn.b2b.playback.PreviewTrackHolder
 import com.github.reygnn.b2b.service.ServiceState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
@@ -33,10 +36,12 @@ import javax.inject.Inject
 @HiltViewModel
 class WhitelistViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
+    private val orchestrator: PlaybackOrchestrator,
     poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
     statusHolder: OrchestratorStatusHolder,
     playerStateHolder: PlayerStateHolder,
+    previewHolder: PreviewTrackHolder,
     serviceState: ServiceState,
 ) : ViewModel() {
 
@@ -65,6 +70,7 @@ class WhitelistViewModel @Inject constructor(
     // without disturbing the orchestrator status row).
     val orchestratorStatus: StateFlow<OrchestratorStatusSnapshot> = statusHolder.snapshot
     val playerState: StateFlow<PlayerStateSnapshot?> = playerStateHolder.snapshot
+    val nextPick: StateFlow<Track?> = previewHolder.track
     val poolTrackCount: StateFlow<Int> = poolRepo.observeTrackCount().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -125,6 +131,10 @@ class WhitelistViewModel @Inject constructor(
     fun toggleService() {
         val cmd = if (isServiceRunning.value) ServiceCommand.Stop else ServiceCommand.Start
         _serviceCommand.trySend(cmd)
+    }
+
+    fun skipNext() {
+        viewModelScope.launch { orchestrator.skipPreview() }
     }
 
     private fun describeError(error: Outcome.Error): String = when (error) {

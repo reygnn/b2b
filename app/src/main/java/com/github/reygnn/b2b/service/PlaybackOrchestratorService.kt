@@ -13,6 +13,7 @@ import com.github.reygnn.b2b.playback.OrchestratorStatus
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
 import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateHolder
+import com.github.reygnn.b2b.playback.PreviewTrackHolder
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,7 @@ class PlaybackOrchestratorService : Service() {
     @Inject lateinit var serviceState: ServiceState
     @Inject lateinit var statusHolder: OrchestratorStatusHolder
     @Inject lateinit var playerStateHolder: PlayerStateHolder
+    @Inject lateinit var previewHolder: PreviewTrackHolder
     @Inject @DefaultDispatcher lateinit var dispatcher: CoroutineDispatcher
 
     private val supervisor = SupervisorJob()
@@ -74,6 +76,7 @@ class PlaybackOrchestratorService : Service() {
         serviceState.setRunning(false)
         statusHolder.reset()
         playerStateHolder.reset()
+        previewHolder.reset()
         super.onDestroy()
     }
 

@@ -35,12 +35,16 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.github.reygnn.b2b.R
+import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.playback.OrchestratorStatus
 import com.github.reygnn.b2b.playback.OrchestratorStatusSnapshot
 import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateSnapshot
 import com.github.reygnn.b2b.service.PlaybackOrchestratorService
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.layout.Arrangement.SpaceBetween
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,6 +60,7 @@ fun WhitelistScreen(
     val serviceRunning by vm.isServiceRunning.collectAsState()
     val statusSnapshot by vm.orchestratorStatus.collectAsState()
     val playerSnapshot by vm.playerState.collectAsState()
+    val nextPick by vm.nextPick.collectAsState()
     val poolCount by vm.poolTrackCount.collectAsState()
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
@@ -88,6 +93,8 @@ fun WhitelistScreen(
                 serviceRunning = serviceRunning,
                 statusSnapshot = statusSnapshot,
                 playerSnapshot = playerSnapshot,
+                nextPick = nextPick,
+                onSkipNext = { vm.skipNext() },
                 poolCount = poolCount,
                 lastSyncEpochMs = lastSync,
                 isSyncing = isSyncing,
@@ -169,6 +176,8 @@ private fun StatusCard(
     serviceRunning: Boolean,
     statusSnapshot: OrchestratorStatusSnapshot,
     playerSnapshot: PlayerStateSnapshot?,
+    nextPick: Track?,
+    onSkipNext: () -> Unit,
     poolCount: Int,
     lastSyncEpochMs: Long?,
     isSyncing: Boolean,
@@ -193,6 +202,9 @@ private fun StatusCard(
                     statusLine(serviceRunning, statusSnapshot, now),
                 style = MaterialTheme.typography.bodyMedium,
             )
+            if (nextPick != null) {
+                NextPickRow(track = nextPick, onSkip = onSkipNext)
+            }
             if (playerSnapshot != null) {
                 Text(
                     text = positionLine(playerSnapshot, now),
@@ -204,6 +216,24 @@ private fun StatusCard(
                     poolLine(poolCount, lastSyncEpochMs, isSyncing, now),
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+    }
+}
+
+@Composable
+private fun NextPickRow(track: Track, onSkip: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "${stringResource(R.string.next_label)}: " +
+                stringResource(R.string.next_pick, track.name, track.artistName),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        TextButton(onClick = onSkip) {
+            Text(stringResource(R.string.skip_next_glyph))
         }
     }
 }

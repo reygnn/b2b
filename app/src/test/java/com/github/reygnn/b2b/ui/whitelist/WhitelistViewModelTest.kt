@@ -6,9 +6,12 @@ import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
+import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.playback.OrchestratorStatus
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
+import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateHolder
+import com.github.reygnn.b2b.playback.PreviewTrackHolder
 import com.github.reygnn.b2b.service.ServiceState
 import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
@@ -37,6 +40,10 @@ class WhitelistViewModelTest {
     private val serviceState = ServiceState()
     private val statusHolder = OrchestratorStatusHolder()
     private val playerStateHolder = PlayerStateHolder()
+    private val previewHolder = PreviewTrackHolder()
+    private val orchestrator: PlaybackOrchestrator = mockk(relaxUnitFun = true) {
+        coEvery { skipPreview() } returns Unit
+    }
 
     @Before fun stubDefaults() {
         coEvery { artistRepo.observeWhitelist() } returns MutableStateFlow(emptyList())
@@ -183,6 +190,35 @@ class WhitelistViewModelTest {
             }
         }
 
+    @Test fun `nextPick reflects the PreviewTrackHolder`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            val track = Track(
+                uri = "spotify:track:42",
+                name = "Pick",
+                artistId = "ar",
+                artistName = "Artist",
+                durationMs = 100,
+            )
+
+            sut.nextPick.test {
+                assertThat(awaitItem()).isNull()
+                previewHolder.set(track)
+                assertThat(awaitItem()).isEqualTo(track)
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `skipNext delegates to orchestrator skipPreview`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+
+            sut.skipNext()
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { orchestrator.skipPreview() }
+        }
+
     @Test fun `isSyncing reflects the PoolSyncObserver`() =
         runTest(mainRule.testScheduler) {
             val syncing = MutableStateFlow(false)
@@ -199,10 +235,12 @@ class WhitelistViewModelTest {
 
     private fun newSut() = WhitelistViewModel(
         artistRepo = artistRepo,
+        orchestrator = orchestrator,
         poolRepo = poolRepo,
         poolSyncObserver = poolSyncObserver,
         statusHolder = statusHolder,
         playerStateHolder = playerStateHolder,
+        previewHolder = previewHolder,
         serviceState = serviceState,
     )
 

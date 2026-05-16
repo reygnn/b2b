@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.playback
 
 import com.github.reygnn.b2b.domain.model.Outcome
+import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.RecentlyPlayedRepository
 import com.github.reygnn.b2b.domain.usecase.PickNextTrackUseCase
@@ -47,6 +48,7 @@ class PlaybackOrchestrator @Inject constructor(
     private val playback: PlaybackRepository,
     private val recents: RecentlyPlayedRepository,
     private val playerStateHolder: PlayerStateHolder,
+    private val previewHolder: PreviewTrackHolder,
 ) {
     private val _status = MutableSharedFlow<OrchestratorStatus>(
         extraBufferCapacity = 4,
@@ -54,7 +56,19 @@ class PlaybackOrchestrator @Inject constructor(
     )
     val status: SharedFlow<OrchestratorStatus> = _status.asSharedFlow()
 
+    // Two-phase pick: chosen at track-change so the UI can show
+    // "Next: <Track>" with a skip button, consumed at trigger-fire by
+    // enqueueOnce. Anti-repeat is NOT updated until the track is actually
+    // enqueued — skipping is free.
+    @Volatile private var pendingPick: Track? = null
+
+    // Captured from the latest run(...) call so skipPreview() (invoked from
+    // the UI thread, outside the run-loop scope) uses the same window the
+    // orchestrator was started with.
+    @Volatile private var currentAntiRepeatWindow: Int = DEFAULT_ANTI_REPEAT_WINDOW
+
     suspend fun run(antiRepeatWindow: Int): Unit = coroutineScope {
+        currentAntiRepeatWindow = antiRepeatWindow
         var lastEnqueuedForTrackId: String? = null
         var lastSeenTrackId: String? = null
         var triggerJob: Job? = null
@@ -72,7 +86,9 @@ class PlaybackOrchestrator @Inject constructor(
                 // Track-change beacon: emit Listening exactly once per new URI,
                 // independent of the trigger arming below. Lets the UI show
                 // "Currently: …" between enqueues and prove the App Remote
-                // connection is producing events.
+                // connection is producing events. Also the place to pre-pick
+                // the upcoming push so the UI's "Next: <Track>" line has
+                // something to render before the trigger fires.
                 if (state.trackUri != lastSeenTrackId) {
                     _status.emit(
                         OrchestratorStatus.Listening(
@@ -82,6 +98,7 @@ class PlaybackOrchestrator @Inject constructor(
                         )
                     )
                     lastSeenTrackId = state.trackUri
+                    prePickNext(antiRepeatWindow)
                 }
 
                 // Re-arm policy: every new state cancels the pending timer and
@@ -100,6 +117,38 @@ class PlaybackOrchestrator @Inject constructor(
                     }
                 }
             }
+    }
+
+    /**
+     * Re-pick the upcoming track without touching anti-repeat state — invoked
+     * from the UI via the ViewModel when the user taps the skip button on the
+     * preview row. The current `pendingPick` is replaced (possibly with the
+     * same track if `pickNext` happens to roll it again — semantically
+     * consistent with the regular pick).
+     *
+     * No-op when no pick is currently pending (service not running, or the
+     * trigger already fired). Suspends because `pickNext` is a suspend
+     * use case; the call site is `viewModelScope.launch`.
+     */
+    suspend fun skipPreview() {
+        if (pendingPick == null) return
+        prePickNext(currentAntiRepeatWindow)
+    }
+
+    private suspend fun prePickNext(antiRepeatWindow: Int) {
+        when (val pick = pickNext(antiRepeatWindow)) {
+            is Outcome.Success -> {
+                pendingPick = pick.value
+                previewHolder.set(pick.value)
+            }
+            is Outcome.Error -> {
+                // Pool empty / lookup failed — leave preview empty so the UI
+                // hides the row. No status emission: the orchestrator's
+                // status surface is for enqueue outcomes, not pre-pick.
+                pendingPick = null
+                previewHolder.reset()
+            }
+        }
     }
 
     private suspend fun enqueueOnce(antiRepeatWindow: Int): Boolean {
@@ -130,17 +179,25 @@ class PlaybackOrchestrator @Inject constructor(
                 return false
             }
         }
-        val pick = pickNext(antiRepeatWindow)
-        if (pick !is Outcome.Success) return false
-        val enqueueResult = playback.enqueue(pick.value.uri, device)
+        // Honour the user-visible pre-pick from the preview. Fallback to a
+        // fresh pick if the pre-pick never happened (e.g. pool was empty at
+        // track change but has tracks now from a sync that just finished).
+        val pick = pendingPick ?: run {
+            val fresh = pickNext(antiRepeatWindow)
+            if (fresh !is Outcome.Success) return false
+            fresh.value
+        }
+        val enqueueResult = playback.enqueue(pick.uri, device)
         if (enqueueResult !is Outcome.Success) return false
-        recents.record(pick.value.uri)
+        recents.record(pick.uri)
         recents.trim(antiRepeatWindow * 2)
+        pendingPick = null
+        previewHolder.reset()
         _status.emit(
             OrchestratorStatus.Enqueued(
-                trackName = pick.value.name,
-                artistName = pick.value.artistName,
-                trackUri = pick.value.uri,
+                trackName = pick.name,
+                artistName = pick.artistName,
+                trackUri = pick.uri,
             )
         )
         return true
@@ -162,5 +219,10 @@ class PlaybackOrchestrator @Inject constructor(
 
     companion object {
         const val TRIGGER_MS = 15_000L
+
+        // Fallback for skipPreview before run() has been called. The service
+        // always starts run() before any UI interaction is possible, so this
+        // matters only in defensive paths / synthetic tests.
+        private const val DEFAULT_ANTI_REPEAT_WINDOW = 50
     }
 }

@@ -27,12 +27,12 @@ markiert und vom Rest entkoppelt.
    SPOTIFY_CLIENT_ID=dein_client_id_hier
    ```
 
-3. **Spotify App Remote SDK**: Die Maven-Koordinate in `libs.versions.toml` ist
-   ein Best-Effort-Mapping. Falls Gradle die Lib nicht auflöst, lade die `.aar`
-   von https://github.com/spotify/android-sdk und lege sie als `app/libs/`
-   ab. `implementation(fileTree("libs"))` in `app/build.gradle.kts`
-   eintragen und den `spotify-app-remote`-Eintrag in den dependencies
-   auskommentiert lassen.
+3. **Spotify App Remote SDK**: Spotify veröffentlicht das App-Remote-AAR
+   nicht über Maven. Lade das aktuelle Release-Zip von
+   https://github.com/spotify/android-sdk/releases runter und kopiere
+   `spotify-app-remote-release-X.Y.Z.aar` nach `app/libs/`. Der
+   `implementation(fileTree("libs") { include("*.aar") })`-Eintrag in
+   `app/build.gradle.kts` zieht es automatisch in den Classpath.
 
 4. **Build**:
    ```bash

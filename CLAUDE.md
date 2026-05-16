@@ -118,11 +118,13 @@ do not throw across layer boundaries.
    not in any repository or in the foreground service shell.
 
    The orchestrator consumes a `PlayerStateSource` (interface,
-   `playback/PlayerStateSource.kt`); the production binding is currently
-   `NoopPlayerStateSource` (no events). When the Spotify App Remote SDK
-   lands on the classpath (see README setup step 3), write an SDK-backed
-   `PlayerStateSource` and swap the `@Binds` in `BindsModule`. Do not
-   route App Remote calls anywhere else.
+   `playback/PlayerStateSource.kt`); the production binding is
+   `AppRemotePlayerStateSource`, which wraps the Spotify App Remote SDK
+   in a `callbackFlow`. The SDK is shipped as the local AAR
+   `app/libs/spotify-app-remote-release-*.aar`. Do not route any other
+   App Remote calls outside this class — every SDK touch lives behind
+   the `PlayerStateSource` interface so the orchestrator stays
+   Android-free and JVM-testable.
 
 4. **`PoolSyncWorker` rate-limit handling: in-run `delay`, not
    `Result.retry()`.** When `fetchAllTrackUrisForArtist(...)` returns

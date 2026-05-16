@@ -126,8 +126,9 @@ dependencies {
 
     implementation(libs.work.runtime.ktx)
 
-    // Spotify App Remote SDK — see README for manual install if Maven coordinate fails.
-    // implementation(libs.spotify.app.remote)
+    // Spotify App Remote SDK is shipped as an AAR (no official Maven coord).
+    // See README setup step 3.
+    implementation(fileTree("libs") { include("*.aar") })
 
     testImplementation(libs.junit)
     testImplementation(libs.mockk)

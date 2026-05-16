@@ -139,3 +139,8 @@ crashlytics-build.properties
 test-results/
 test-reports/
 
+# Unused Spotify Auth/Auth-Store AARs from the SDK zip — only
+# spotify-app-remote is wired up (in app/libs/); the auth libs would
+# kick in if we ever switched from PKCE/Custom-Tab to native-app OAuth.
+/spotify/
+

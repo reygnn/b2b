@@ -20,6 +20,7 @@ interface PoolRepository {
     fun observeLatestSyncEpochMs(): Flow<Long?>
     suspend fun randomTrackExcluding(excludedUris: Set<String>): Track?
     suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>)
+    suspend fun deleteTracksForArtist(artistId: String)
 }
 
 interface RecentlyPlayedRepository {

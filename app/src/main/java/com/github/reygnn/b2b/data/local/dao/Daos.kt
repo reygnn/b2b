@@ -60,6 +60,9 @@ interface PoolTrackDao {
 
     @Query("DELETE FROM pool_track WHERE artistId NOT IN (:keep)")
     suspend fun deleteWhereArtistNotIn(keep: List<String>)
+
+    @Query("DELETE FROM pool_track WHERE artistId = :artistId")
+    suspend fun deleteByArtist(artistId: String)
 }
 
 @Dao

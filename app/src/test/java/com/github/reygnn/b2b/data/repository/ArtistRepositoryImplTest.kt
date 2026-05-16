@@ -5,6 +5,7 @@ import com.github.reygnn.b2b.data.local.entity.WhitelistedArtistEntity
 import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
+import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.Runs
@@ -33,6 +34,7 @@ class ArtistRepositoryImplTest {
     private lateinit var server: MockWebServer
     private lateinit var api: SpotifyApi
     private val dao: WhitelistDao = mockk(relaxUnitFun = true)
+    private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val poolSyncTrigger: PoolSyncTrigger = mockk(relaxUnitFun = true)
     private lateinit var sut: ArtistRepositoryImpl
 
@@ -45,7 +47,7 @@ class ArtistRepositoryImplTest {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(SpotifyApi::class.java)
-        sut = ArtistRepositoryImpl(api, dao, poolSyncTrigger, mainRule.testDispatcher)
+        sut = ArtistRepositoryImpl(api, dao, poolRepo, poolSyncTrigger, mainRule.testDispatcher)
     }
 
     @After fun tearDown() { server.shutdown() }
@@ -155,6 +157,48 @@ class ArtistRepositoryImplTest {
             assertThat(server.requestCount).isEqualTo(4)
         }
 
+    @Test fun `fetchAllTrackUrisForArtist filters out tracks where the requested artist is not a contributor`() =
+        runTest(mainRule.testScheduler) {
+            // Single album page, single tracks page with three tracks:
+            // - t1: only art1 → keep
+            // - t2: stranger + art1 (feature) → keep, display name = art1
+            // - t3: only stranger → drop
+            server.enqueue(
+                MockResponse().setBody(
+                    """
+                    {"items":[{"id":"alb1","name":"Album","uri":"spotify:album:alb1","album_type":"album","total_tracks":3}],
+                     "next":null,"limit":50,"offset":0,"total":1}
+                    """.trimIndent()
+                )
+            )
+            server.enqueue(
+                MockResponse().setBody(
+                    """
+                    {"items":[
+                        {"id":"t1","name":"Solo","uri":"spotify:track:t1","duration_ms":1000,
+                         "artists":[{"id":"art1","name":"Hannah"}]},
+                        {"id":"t2","name":"Feature","uri":"spotify:track:t2","duration_ms":1000,
+                         "artists":[{"id":"stranger","name":"Stranger"},{"id":"art1","name":"Hannah"}]},
+                        {"id":"t3","name":"Foreign","uri":"spotify:track:t3","duration_ms":1000,
+                         "artists":[{"id":"stranger","name":"Stranger"}]}
+                    ],"next":null,"limit":50,"offset":0,"total":3}
+                    """.trimIndent()
+                )
+            )
+
+            val result = sut.fetchAllTrackUrisForArtist("art1")
+
+            assertThat(result).isInstanceOf(Outcome.Success::class.java)
+            val tracks = (result as Outcome.Success).value
+            assertThat(tracks.map { it.uri }).containsExactly(
+                "spotify:track:t1", "spotify:track:t2"
+            ).inOrder()
+            // Display name always reflects the requested artist, even for
+            // the feature track where Spotify lists the stranger first.
+            assertThat(tracks.all { it.artistName == "Hannah" }).isTrue()
+            assertThat(tracks.all { it.artistId == "art1" }).isTrue()
+        }
+
     @Test fun `fetchAllTrackUrisForArtist propagates RateLimited mid-pagination`() =
         runTest(mainRule.testScheduler) {
             // Page 1 of albums: success.
@@ -188,11 +232,15 @@ class ArtistRepositoryImplTest {
             coVerify(exactly = 1) { poolSyncTrigger.triggerAfterWhitelistChange() }
         }
 
-    @Test fun `removeFromWhitelist delegates to DAO and does not trigger sync`() =
+    @Test fun `removeFromWhitelist delegates to DAO, prunes pool, does not trigger sync`() =
         runTest(mainRule.testScheduler) {
             sut.removeFromWhitelist("art1")
 
             coVerify(exactly = 1) { dao.delete("art1") }
+            // Pool prune happens inline so the next pickNext does not draw
+            // a stale track from the removed artist before the 24 h
+            // periodic sync runs.
+            coVerify(exactly = 1) { poolRepo.deleteTracksForArtist("art1") }
             coVerify(exactly = 0) { poolSyncTrigger.triggerAfterWhitelistChange() }
         }
 }

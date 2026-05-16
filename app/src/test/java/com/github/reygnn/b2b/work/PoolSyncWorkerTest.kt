@@ -11,6 +11,7 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -50,6 +51,23 @@ class PoolSyncWorkerTest {
             coVerify { poolRepo.upsertTracks(listOf(track("t1", "a1"))) }
             coVerify { poolRepo.upsertTracks(listOf(track("t2", "a2"), track("t3", "a2"))) }
             coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
+        }
+
+    @Test fun `per-artist sync deletes the old pool slice before upserting the fresh one`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { dao.allIds() } returns listOf("a1")
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            build().doWork()
+
+            // Delete must precede upsert so leftover tracks from an earlier
+            // sync (e.g. ones the old buggy filter left under this artist's
+            // id) are evicted, not just overlaid where URIs collide.
+            coVerifyOrder {
+                poolRepo.deleteTracksForArtist("a1")
+                poolRepo.upsertTracks(listOf(track("t1", "a1")))
+            }
         }
 
     @Test fun `when rate limited then delays and succeeds on next attempt`() =

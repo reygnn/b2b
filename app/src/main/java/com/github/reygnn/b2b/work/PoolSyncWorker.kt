@@ -49,6 +49,13 @@ class PoolSyncWorker @AssistedInject constructor(
             while (true) {
                 when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
                     is Outcome.Success -> {
+                        // Replace this artist's slice of the pool wholesale.
+                        // `upsertTracks` only replaces rows that collide on
+                        // URI — leftover tracks from a previous (buggier)
+                        // sync would otherwise linger forever under this
+                        // artist's id. Deleting first guarantees the pool
+                        // matches the current Spotify view of the artist.
+                        poolRepo.deleteTracksForArtist(id)
                         poolRepo.upsertTracks(tracks.value)
                         break
                     }

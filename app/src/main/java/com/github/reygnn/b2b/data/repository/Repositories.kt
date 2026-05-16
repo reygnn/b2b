@@ -79,6 +79,7 @@ private fun kotlinx.serialization.json.JsonElement.jsonPrimitiveOrNull() =
 class ArtistRepositoryImpl @Inject constructor(
     private val api: SpotifyApi,
     private val dao: WhitelistDao,
+    private val poolRepo: PoolRepository,
     private val poolSyncTrigger: PoolSyncTrigger,
     @param:IoDispatcher private val io: CoroutineDispatcher,
 ) : ArtistRepository {
@@ -112,6 +113,11 @@ class ArtistRepositoryImpl @Inject constructor(
 
     override suspend fun removeFromWhitelist(artistId: String) = withContext(io) {
         dao.delete(artistId)
+        // Symmetric to addToWhitelist's one-shot sync: prune the pool now so
+        // the next pickNext doesn't draw a stale track from the removed
+        // artist. Local DB only — no need to wait for the 24 h periodic
+        // PoolSyncWorker (which is gated on UNMETERED network).
+        poolRepo.deleteTracksForArtist(artistId)
     }
 
     override suspend fun fetchAllTrackUrisForArtist(artistId: String): Outcome<List<Track>> =
@@ -134,11 +140,24 @@ class ArtistRepositoryImpl @Inject constructor(
                             }
                             val trackPage = tracksResp.body() ?: break
                             for (t in trackPage.items) {
+                                // Spotify's /albums/{id}/tracks returns ALL
+                                // tracks on the album, not just those by the
+                                // artist we asked for. On split / various-
+                                // artists / featuring releases this dumps
+                                // unrelated tracks into our pool under the
+                                // wrong artist id. Filter: keep a track only
+                                // if our artist actually appears in its
+                                // contributor list. Display name comes from
+                                // the matching ArtistRefDto so features
+                                // surface consistently as "our artist"
+                                // instead of the lead.
+                                val matchingArtist =
+                                    t.artists.firstOrNull { it.id == artistId } ?: continue
                                 tracks += Track(
                                     uri = t.uri,
                                     name = t.name,
                                     artistId = artistId,
-                                    artistName = t.artists.firstOrNull()?.name ?: "",
+                                    artistName = matchingArtist.name,
                                     durationMs = t.durationMs,
                                 )
                             }
@@ -200,6 +219,9 @@ class PoolRepositoryImpl @Inject constructor(
 
     override suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>) =
         withContext(io) { dao.deleteWhereArtistNotIn(currentArtistIds.toList()) }
+
+    override suspend fun deleteTracksForArtist(artistId: String) =
+        withContext(io) { dao.deleteByArtist(artistId) }
 }
 
 @Singleton

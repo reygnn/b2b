@@ -13,6 +13,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -42,6 +44,8 @@ fun WhitelistScreen(
     val context = LocalContext.current
     val whitelist by vm.whitelisted.collectAsState()
     val results by vm.searchResults.collectAsState()
+    val isSearching by vm.isSearching.collectAsState()
+    val searchError by vm.searchError.collectAsState()
     val serviceRunning by vm.isServiceRunning.collectAsState()
     var query by remember { mutableStateOf("") }
 
@@ -90,6 +94,23 @@ fun WhitelistScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            if (isSearching) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                )
+            }
+
+            searchError?.let { reason ->
+                Text(
+                    text = reason,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+
             if (results.isNotEmpty()) {
                 Text("Results", modifier = Modifier.padding(top = 16.dp))
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -100,6 +121,12 @@ fun WhitelistScreen(
                         }
                     }
                 }
+            } else if (query.isNotBlank() && !isSearching && searchError == null) {
+                Text(
+                    text = "No results",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))

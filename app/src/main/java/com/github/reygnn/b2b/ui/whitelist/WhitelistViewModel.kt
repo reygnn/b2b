@@ -43,6 +43,9 @@ class WhitelistViewModel @Inject constructor(
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
+    private val _searchError = MutableStateFlow<String?>(null)
+    val searchError: StateFlow<String?> = _searchError.asStateFlow()
+
     private val _query = MutableStateFlow("")
 
     val isServiceRunning: StateFlow<Boolean> = serviceState.running
@@ -62,12 +65,19 @@ class WhitelistViewModel @Inject constructor(
                     if (query.isBlank()) {
                         _searchResults.value = emptyList()
                         _isSearching.value = false
+                        _searchError.value = null
                         return@collectLatest
                     }
                     _isSearching.value = true
+                    _searchError.value = null
                     when (val r = artistRepo.searchArtists(query)) {
-                        is Outcome.Success -> _searchResults.value = r.value
-                        is Outcome.Error -> _searchResults.value = emptyList()
+                        is Outcome.Success -> {
+                            _searchResults.value = r.value
+                        }
+                        is Outcome.Error -> {
+                            _searchResults.value = emptyList()
+                            _searchError.value = describeError(r)
+                        }
                     }
                     _isSearching.value = false
                 }
@@ -84,6 +94,15 @@ class WhitelistViewModel @Inject constructor(
     fun toggleService() {
         val cmd = if (isServiceRunning.value) ServiceCommand.Stop else ServiceCommand.Start
         _serviceCommand.trySend(cmd)
+    }
+
+    private fun describeError(error: Outcome.Error): String = when (error) {
+        is Outcome.Error.Network -> "Network error"
+        is Outcome.Error.Unauthenticated -> "Session expired — sign in again"
+        is Outcome.Error.NotPremium -> "Spotify Premium required"
+        is Outcome.Error.NoActiveDevice -> "No active Spotify device"
+        is Outcome.Error.RateLimited -> "Rate limited — retry in ${error.retryAfterSeconds}s"
+        is Outcome.Error.Unknown -> error.message ?: "Unknown error"
     }
 
     private companion object {

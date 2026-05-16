@@ -9,7 +9,9 @@ import com.github.reygnn.b2b.data.local.AppDatabase
 import com.github.reygnn.b2b.data.local.dao.PoolTrackDao
 import com.github.reygnn.b2b.data.local.dao.RecentlyPlayedDao
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.BuildConfig
 import com.github.reygnn.b2b.data.remote.AuthInterceptor
+import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
 import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PlaybackRepositoryImpl
@@ -34,12 +36,20 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import javax.inject.Named
 import javax.inject.Qualifier
 import javax.inject.Singleton
 
 @Qualifier @Retention(AnnotationRetention.BINARY) annotation class IoDispatcher
 @Qualifier @Retention(AnnotationRetention.BINARY) annotation class DefaultDispatcher
 @Qualifier @Retention(AnnotationRetention.BINARY) annotation class MainDispatcher
+
+/**
+ * Marks the OkHttpClient / Retrofit / API used for Spotify's accounts (token)
+ * endpoint. The accounts client MUST NOT carry [AuthInterceptor]; see
+ * [SpotifyAccountsApi] for the recursion hazard.
+ */
+@Qualifier @Retention(AnnotationRetention.BINARY) annotation class AccountsClient
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -67,6 +77,7 @@ object DatabaseModule {
 object NetworkModule {
 
     private const val BASE_URL = "https://api.spotify.com/"
+    private const val ACCOUNTS_BASE_URL = "https://accounts.spotify.com/"
 
     @Provides @Singleton fun json(): Json = Json {
         ignoreUnknownKeys = true
@@ -90,6 +101,30 @@ object NetworkModule {
 
     @Provides @Singleton
     fun spotifyApi(retrofit: Retrofit): SpotifyApi = retrofit.create(SpotifyApi::class.java)
+
+    @Provides @Singleton @AccountsClient
+    fun accountsOkHttp(): OkHttpClient =
+        OkHttpClient.Builder()
+            .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            .build()
+
+    @Provides @Singleton @AccountsClient
+    fun accountsRetrofit(@AccountsClient client: OkHttpClient, json: Json): Retrofit =
+        Retrofit.Builder()
+            .baseUrl(ACCOUNTS_BASE_URL)
+            .client(client)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+
+    @Provides @Singleton
+    fun spotifyAccountsApi(@AccountsClient retrofit: Retrofit): SpotifyAccountsApi =
+        retrofit.create(SpotifyAccountsApi::class.java)
+
+    @Provides @Named("spotifyClientId")
+    fun spotifyClientId(): String = BuildConfig.SPOTIFY_CLIENT_ID
+
+    @Provides @Named("spotifyRedirectUri")
+    fun spotifyRedirectUri(): String = BuildConfig.SPOTIFY_REDIRECT_URI
 }
 
 @Module

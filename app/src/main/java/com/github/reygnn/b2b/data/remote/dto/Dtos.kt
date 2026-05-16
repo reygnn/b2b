@@ -74,3 +74,12 @@ data class UserProfileDto(
     val id: String,
     val product: String? = null, // "premium" | "free" | "open"
 )
+
+@Serializable
+data class TokenResponseDto(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("token_type") val tokenType: String = "Bearer",
+    @SerialName("expires_in") val expiresInSeconds: Long,
+    @SerialName("refresh_token") val refreshToken: String? = null,
+    val scope: String? = null,
+)

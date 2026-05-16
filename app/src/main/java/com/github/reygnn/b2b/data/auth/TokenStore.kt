@@ -21,7 +21,7 @@ interface TokenStore {
  */
 @Singleton
 class TokenStoreImpl @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val refresher: dagger.Lazy<PkceAuthManager>,
 ) : TokenStore {
 

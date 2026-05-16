@@ -41,9 +41,39 @@ private inline fun <T, R> Response<T>.toOutcome(transform: (T) -> R): Outcome<R>
         429 -> Outcome.Error.RateLimited(
             retryAfterSeconds = headers()["Retry-After"]?.toIntOrNull() ?: 1
         )
-        else -> Outcome.Error.Unknown("HTTP ${code()}")
+        else -> Outcome.Error.Unknown(describeError())
     }
 }
+
+/**
+ * Pulls Spotify's error envelope (`{"error":{"status":N,"message":"..."}}`)
+ * out of the response body and folds it into a one-line description. The
+ * raw text is included as a fallback so unknown response shapes still
+ * surface something useful in the UI rather than just the status code.
+ */
+private fun Response<*>.describeError(): String {
+    val code = code()
+    val raw = try { errorBody()?.string()?.trim().orEmpty() } catch (_: Exception) { "" }
+    if (raw.isEmpty()) return "HTTP $code"
+    val message = try {
+        kotlinx.serialization.json.Json
+            .parseToJsonElement(raw)
+            .jsonObjectOrNull()
+            ?.get("error")
+            ?.jsonObjectOrNull()
+            ?.get("message")
+            ?.jsonPrimitiveOrNull()
+            ?.content
+    } catch (_: Exception) { null }
+    return if (!message.isNullOrBlank()) "HTTP $code: $message"
+    else "HTTP $code: ${raw.take(200)}"
+}
+
+private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull() =
+    this as? kotlinx.serialization.json.JsonObject
+
+private fun kotlinx.serialization.json.JsonElement.jsonPrimitiveOrNull() =
+    this as? kotlinx.serialization.json.JsonPrimitive
 
 @Singleton
 class ArtistRepositoryImpl @Inject constructor(

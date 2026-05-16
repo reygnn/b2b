@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.playback
 
 import app.cash.turbine.test
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
@@ -44,6 +45,7 @@ class PlaybackOrchestratorTest {
 
     private val sut = PlaybackOrchestrator(
         source, pickNext, playback, recents, playerStateHolder, previewHolder,
+        log = mockk<LogSink>(relaxed = true),
     )
 
     @Before fun stubHappyPath() {

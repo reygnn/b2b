@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
@@ -37,6 +38,7 @@ class PoolSyncWorker @AssistedInject constructor(
     private val artistRepo: ArtistRepository,
     private val poolRepo: PoolRepository,
     private val whitelistDao: WhitelistDao,
+    private val log: LogSink,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result =
@@ -52,16 +54,20 @@ class PoolSyncWorker @AssistedInject constructor(
 
     private suspend fun runSync(): Result {
         val artistIds = whitelistDao.allIds()
+        log.log("sync: start, ${artistIds.size} artists")
         if (artistIds.isEmpty()) {
             poolRepo.deleteTracksForRemovedArtists(emptySet())
+            log.log("sync: empty whitelist, done")
             return Result.success()
         }
 
         for (id in artistIds) {
+            log.log("sync: $id fetching…")
             var rateLimitAttempts = 0
             while (true) {
                 when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
                     is Outcome.Success -> {
+                        log.log("sync: $id → ${tracks.value.size} tracks")
                         // Replace this artist's slice of the pool wholesale.
                         // `upsertTracks` only replaces rows that collide on
                         // URI — leftover tracks from a previous (buggier)
@@ -74,17 +80,26 @@ class PoolSyncWorker @AssistedInject constructor(
                     }
                     is Outcome.Error.RateLimited -> {
                         if (++rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
+                            log.log("sync: $id rate-limit budget exceeded → retry")
                             return Result.retry()
                         }
+                        log.log("sync: $id rate-limited, sleeping ${tracks.retryAfterSeconds}s")
                         delay(tracks.retryAfterSeconds * 1000L)
                     }
-                    is Outcome.Error.Network -> return Result.retry()
-                    is Outcome.Error -> return Result.failure()
+                    is Outcome.Error.Network -> {
+                        log.log("sync: $id network error → retry")
+                        return Result.retry()
+                    }
+                    is Outcome.Error -> {
+                        log.log("sync: $id error → failure")
+                        return Result.failure()
+                    }
                 }
             }
         }
 
         poolRepo.deleteTracksForRemovedArtists(artistIds.toSet())
+        log.log("sync: complete")
         return Result.success()
     }
 

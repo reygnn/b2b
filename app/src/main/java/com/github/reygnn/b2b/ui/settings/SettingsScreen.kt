@@ -25,6 +25,7 @@ import com.github.reygnn.b2b.R
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onOpenLogs: () -> Unit,
     vm: SettingsViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -54,6 +55,13 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.settings_cancel_sync))
+            }
+
+            OutlinedButton(
+                onClick = onOpenLogs,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.settings_view_logs))
             }
 
             OutlinedButton(

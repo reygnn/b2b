@@ -4,6 +4,7 @@ import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.RecentlyPlayedRepository
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.usecase.PickNextTrackUseCase
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -49,6 +50,7 @@ class PlaybackOrchestrator @Inject constructor(
     private val recents: RecentlyPlayedRepository,
     private val playerStateHolder: PlayerStateHolder,
     private val previewHolder: PreviewTrackHolder,
+    private val log: LogSink,
 ) {
     private val _status = MutableSharedFlow<OrchestratorStatus>(
         extraBufferCapacity = 4,
@@ -75,6 +77,7 @@ class PlaybackOrchestrator @Inject constructor(
 
         source.states()
             .catch { e ->
+                log.log("orchestrator: source failed — ${e.message ?: "no reason"}")
                 _status.emit(OrchestratorStatus.SpotifyUnavailable(e.message ?: "connection failed"))
             }
             .collect { state ->
@@ -90,6 +93,7 @@ class PlaybackOrchestrator @Inject constructor(
                 // the upcoming push so the UI's "Next: <Track>" line has
                 // something to render before the trigger fires.
                 if (state.trackUri != lastSeenTrackId) {
+                    log.log("listening: ${state.trackName} — ${state.artistName}")
                     _status.emit(
                         OrchestratorStatus.Listening(
                             trackName = state.trackName,
@@ -132,6 +136,7 @@ class PlaybackOrchestrator @Inject constructor(
      */
     suspend fun skipPreview() {
         if (pendingPick == null) return
+        log.log("skip: requested")
         prePickNext(currentAntiRepeatWindow)
     }
 
@@ -140,6 +145,7 @@ class PlaybackOrchestrator @Inject constructor(
             is Outcome.Success -> {
                 pendingPick = pick.value
                 previewHolder.set(pick.value)
+                log.log("pre-pick: ${pick.value.name} — ${pick.value.artistName}")
             }
             is Outcome.Error -> {
                 // Pool empty / lookup failed — leave preview empty so the UI
@@ -147,6 +153,7 @@ class PlaybackOrchestrator @Inject constructor(
                 // status surface is for enqueue outcomes, not pre-pick.
                 pendingPick = null
                 previewHolder.reset()
+                log.log("pre-pick: pool empty")
             }
         }
     }
@@ -154,6 +161,7 @@ class PlaybackOrchestrator @Inject constructor(
     private suspend fun enqueueOnce(antiRepeatWindow: Int): Boolean {
         when (val premium = playback.isPremium()) {
             is Outcome.Success -> if (!premium.value) {
+                log.log("enqueue: free tier, aborting")
                 _status.emit(OrchestratorStatus.FreeTier)
                 return false
             }
@@ -162,12 +170,15 @@ class PlaybackOrchestrator @Inject constructor(
                 // this branch, repeated isPremium() failures during the trigger
                 // window leave the UI stuck on the prior status with no
                 // explanation of why nothing is being enqueued.
-                _status.emit(OrchestratorStatus.SpotifyUnavailable(premium.describe("premium check")))
+                val reason = premium.describe("premium check")
+                log.log("enqueue: $reason")
+                _status.emit(OrchestratorStatus.SpotifyUnavailable(reason))
                 return false
             }
         }
         val device = when (val d = playback.activeDeviceId()) {
             is Outcome.Success -> d.value ?: run {
+                log.log("enqueue: no active device")
                 _status.emit(OrchestratorStatus.NoActiveDevice)
                 return false
             }
@@ -175,7 +186,9 @@ class PlaybackOrchestrator @Inject constructor(
                 // Network/rate-limit/unknown errors from /me/player/devices —
                 // not the same as "no active device" (which is Success(null)).
                 // Surface them so the user knows the API call itself failed.
-                _status.emit(OrchestratorStatus.SpotifyUnavailable(d.describe("devices lookup")))
+                val reason = d.describe("devices lookup")
+                log.log("enqueue: $reason")
+                _status.emit(OrchestratorStatus.SpotifyUnavailable(reason))
                 return false
             }
         }
@@ -184,15 +197,23 @@ class PlaybackOrchestrator @Inject constructor(
         // track change but has tracks now from a sync that just finished).
         val pick = pendingPick ?: run {
             val fresh = pickNext(antiRepeatWindow)
-            if (fresh !is Outcome.Success) return false
+            if (fresh !is Outcome.Success) {
+                log.log("enqueue: no pick available")
+                return false
+            }
             fresh.value
         }
         val enqueueResult = playback.enqueue(pick.uri, device)
-        if (enqueueResult !is Outcome.Success) return false
+        if (enqueueResult !is Outcome.Success) {
+            val reason = (enqueueResult as Outcome.Error).describe("enqueue")
+            log.log(reason)
+            return false
+        }
         recents.record(pick.uri)
         recents.trim(antiRepeatWindow * 2)
         pendingPick = null
         previewHolder.reset()
+        log.log("enqueue: ✓ ${pick.name} — ${pick.artistName}")
         _status.emit(
             OrchestratorStatus.Enqueued(
                 trackName = pick.name,

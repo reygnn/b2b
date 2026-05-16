@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.playback
 
 import android.content.Context
 import com.github.reygnn.b2b.di.MainDispatcher
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.spotify.android.appremote.api.ConnectionParams
 import com.spotify.android.appremote.api.Connector
 import com.spotify.android.appremote.api.SpotifyAppRemote
@@ -50,6 +51,7 @@ class AppRemotePlayerStateSource @Inject constructor(
     @param:Named("spotifyClientId") private val clientId: String,
     @param:Named("spotifyRedirectUri") private val redirectUri: String,
     @param:MainDispatcher private val mainDispatcher: CoroutineDispatcher,
+    private val log: LogSink,
 ) : PlayerStateSource {
 
     override fun states(): Flow<PlayerState> = callbackFlow {
@@ -68,6 +70,7 @@ class AppRemotePlayerStateSource @Inject constructor(
 
         val listener = object : Connector.ConnectionListener {
             override fun onConnected(remote: SpotifyAppRemote) {
+                log.log("app-remote: connected")
                 appRemote = remote
                 val sub = remote.playerApi.subscribeToPlayerState()
                     .setEventCallback { sdkState ->
@@ -89,11 +92,15 @@ class AppRemotePlayerStateSource @Inject constructor(
                             )
                         )
                     }
-                sub.setErrorCallback { throwable -> close(throwable) }
+                sub.setErrorCallback { throwable ->
+                    log.log("app-remote: subscription error — ${throwable.message ?: throwable::class.simpleName}")
+                    close(throwable)
+                }
                 subscription = sub
             }
 
             override fun onFailure(throwable: Throwable) {
+                log.log("app-remote: connection failed — ${throwable.message ?: throwable::class.simpleName}")
                 close(throwable)
             }
         }
@@ -101,6 +108,7 @@ class AppRemotePlayerStateSource @Inject constructor(
         SpotifyAppRemote.connect(context, params, listener)
 
         awaitClose {
+            log.log("app-remote: disconnecting")
             subscription?.cancel()
             appRemote?.let { SpotifyAppRemote.disconnect(it) }
         }

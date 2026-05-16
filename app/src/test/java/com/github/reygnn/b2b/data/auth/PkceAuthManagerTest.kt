@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.data.auth
 
 import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
@@ -187,5 +188,6 @@ class PkceAuthManagerTest {
         clientId = "test-client",
         redirectUri = "b2b://callback",
         io = mainRule.testDispatcher,
+        log = mockk<LogSink>(relaxed = true),
     )
 }

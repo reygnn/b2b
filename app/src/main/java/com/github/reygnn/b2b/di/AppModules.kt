@@ -21,6 +21,8 @@ import com.github.reygnn.b2b.data.repository.PoolSyncTrigger
 import com.github.reygnn.b2b.data.repository.RecentlyPlayedRepositoryImpl
 import com.github.reygnn.b2b.data.repository.WorkManagerPoolSyncObserver
 import com.github.reygnn.b2b.data.repository.WorkManagerPoolSyncTrigger
+import com.github.reygnn.b2b.diagnostics.LogBuffer
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
@@ -144,4 +146,5 @@ abstract class BindsModule {
     @Binds abstract fun bindPlayerStateSource(impl: AppRemotePlayerStateSource): PlayerStateSource
     @Binds abstract fun bindPoolSyncTrigger(impl: WorkManagerPoolSyncTrigger): PoolSyncTrigger
     @Binds abstract fun bindPoolSyncObserver(impl: WorkManagerPoolSyncObserver): PoolSyncObserver
+    @Binds abstract fun bindLogSink(impl: LogBuffer): LogSink
 }

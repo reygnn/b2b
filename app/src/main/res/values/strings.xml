@@ -56,7 +56,14 @@
     <string name="settings_logout">Sign out</string>
     <string name="settings_manual_sync">Sync pool now</string>
     <string name="settings_cancel_sync">Cancel running sync</string>
+    <string name="settings_view_logs">View logs</string>
     <string name="settings_back">Back</string>
     <string name="sync_enqueued">Sync enqueued</string>
     <string name="sync_cancelled">Sync cancelled</string>
+
+    <!-- Logs -->
+    <string name="logs_title">Logs</string>
+    <string name="logs_empty">No log entries yet.</string>
+    <string name="logs_clear">Clear</string>
+    <string name="logs_back">Back</string>
 </resources>

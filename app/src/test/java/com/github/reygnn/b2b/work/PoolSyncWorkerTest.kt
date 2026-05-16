@@ -3,6 +3,7 @@ package com.github.reygnn.b2b.work
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
@@ -122,6 +123,7 @@ class PoolSyncWorkerTest {
         artistRepo = artistRepo,
         poolRepo = poolRepo,
         whitelistDao = dao,
+        log = mockk<LogSink>(relaxed = true),
     )
 
     private fun track(uri: String, artistId: String) = Track(

@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.data.auth
 
 import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
 import com.github.reygnn.b2b.di.IoDispatcher
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -36,6 +37,7 @@ class PkceAuthManager @Inject constructor(
     @param:Named("spotifyClientId") private val clientId: String,
     @param:Named("spotifyRedirectUri") private val redirectUri: String,
     @param:IoDispatcher private val io: CoroutineDispatcher,
+    private val log: LogSink,
 ) {
     @Volatile private var pendingVerifier: String? = null
 
@@ -56,8 +58,14 @@ class PkceAuthManager @Inject constructor(
     suspend fun exchangeAuthorizationCode(code: String): Outcome<Unit> = withContext(io) {
         val outcome = doExchange(code)
         when (outcome) {
-            is Outcome.Success -> authEvents.emit(AuthEvent.LoginSucceeded)
-            is Outcome.Error -> authEvents.emit(AuthEvent.LoginFailed(outcome.describe()))
+            is Outcome.Success -> {
+                log.log("auth: token exchange ok")
+                authEvents.emit(AuthEvent.LoginSucceeded)
+            }
+            is Outcome.Error -> {
+                log.log("auth: token exchange failed — ${outcome.describe()}")
+                authEvents.emit(AuthEvent.LoginFailed(outcome.describe()))
+            }
         }
         outcome
     }
@@ -105,14 +113,20 @@ class PkceAuthManager @Inject constructor(
      * null, the interceptor surfaces the original 401 to the caller.
      */
     suspend fun refresh(): String? = withContext(io) {
-        val currentRefresh = tokenStore.refreshToken() ?: return@withContext null
+        val currentRefresh = tokenStore.refreshToken() ?: run {
+            log.log("auth: refresh skipped — no token stored")
+            return@withContext null
+        }
         try {
             val response = accountsApi.refreshToken(
                 refreshToken = currentRefresh,
                 clientId = clientId,
             )
             val body = response.body()
-            if (!response.isSuccessful || body == null) return@withContext null
+            if (!response.isSuccessful || body == null) {
+                log.log("auth: refresh failed — HTTP ${response.code()}")
+                return@withContext null
+            }
             // Spotify may or may not rotate the refresh token; if it does, store
             // the new one, otherwise keep the existing one.
             val newRefresh = body.refreshToken ?: currentRefresh
@@ -121,8 +135,10 @@ class PkceAuthManager @Inject constructor(
                 refreshToken = newRefresh,
                 expiresAtEpochMs = System.currentTimeMillis() + body.expiresInSeconds * 1000L,
             )
+            log.log("auth: refresh ok")
             body.accessToken
         } catch (_: IOException) {
+            log.log("auth: refresh failed — network error")
             null
         }
     }

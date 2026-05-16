@@ -10,6 +10,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.github.reygnn.b2b.ui.AppViewModel
 import com.github.reygnn.b2b.ui.login.LoginScreen
+import com.github.reygnn.b2b.ui.logs.LogScreen
 import com.github.reygnn.b2b.ui.settings.SettingsScreen
 import com.github.reygnn.b2b.ui.whitelist.WhitelistScreen
 
@@ -17,6 +18,7 @@ object Routes {
     const val LOGIN = "login"
     const val WHITELIST = "whitelist"
     const val SETTINGS = "settings"
+    const val LOGS = "logs"
 }
 
 @Composable
@@ -33,7 +35,13 @@ fun AppNavHost(vm: AppViewModel = hiltViewModel()) {
             WhitelistScreen(onOpenSettings = { nav.navigate(Routes.SETTINGS) })
         }
         composable(Routes.SETTINGS) {
-            SettingsScreen(onBack = { nav.popBackStack() })
+            SettingsScreen(
+                onBack = { nav.popBackStack() },
+                onOpenLogs = { nav.navigate(Routes.LOGS) },
+            )
+        }
+        composable(Routes.LOGS) {
+            LogScreen(onBack = { nav.popBackStack() })
         }
     }
 

@@ -48,17 +48,52 @@ package com.github.reygnn.b2b
  * Multiple dispatchers cause flakes that look like race conditions but are
  * just unscheduled work in a sibling scheduler.
  *
- * ## 2. Mocking: MockK only.
+ * ## 2. WhileSubscribed: use `runCurrent()`, NOT `advanceUntilIdle()`.
+ *
+ * `WhitelistViewModel.whitelisted` (and any future StateFlow built with
+ * `stateIn(scope, SharingStarted.WhileSubscribed(N), initial)`) installs a
+ * subscription-timeout coroutine. `advanceUntilIdle()` runs the virtual clock
+ * until ALL scheduled work is done — including that timeout. By the time the
+ * test inspects the StateFlow, the upstream has already been dropped and the
+ * value reverted to `initial`.
+ *
+ * Use `mainRule.testScheduler.runCurrent()` to drive only the work currently
+ * scheduled (no clock advance). For Turbine on a `WhileSubscribed` flow,
+ * subscribing via `.test { }` keeps the upstream alive for the test's
+ * duration — that path is safe.
+ *
+ * ## 3. MutableSharedFlow in a ViewModel constructor: DROP_OLDEST or Turbine.
+ *
+ * Default `MutableSharedFlow()` has `replay = 0`, `extraBufferCapacity = 0`,
+ * `onBufferOverflow = SUSPEND`. The first `emit` from a producer with no
+ * active subscriber suspends forever — the test hangs until the runner
+ * times it out, with no useful error.
+ *
+ * Two safe patterns:
+ * - `MutableSharedFlow(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)`
+ *   for event flows that should not block production code.
+ * - Subscribe via Turbine **before** the emit happens in the test:
+ *   `sut.events.test { sut.doThing(); assertThat(awaitItem()) ... }`.
+ *
+ * ## 4. Mocking: MockK only.
  *
  * - No Mockito, no PowerMock.
- * - Prefer `mockk<Foo>(relaxed = true)` only when verifying interactions; use
- *   strict mocks for return-value tests so missing stubs fail loudly.
+ * - **`relaxed = true`** stubs every member to a default; use it only when
+ *   verifying interactions (`coVerify { ... }`), not for return-value tests
+ *   — silent defaults hide missing stubs.
+ * - **`relaxUnitFun = true`** is the right tool for repositories with many
+ *   `suspend fun ...: Unit` members (e.g. `mockk<PoolRepository>(relaxUnitFun = true)`
+ *   in `PoolSyncWorkerTest`). It relaxes only Unit-returning members and
+ *   keeps the rest strict.
  * - For `suspend` functions: `coEvery { ... } returns ...` and
  *   `coVerify { ... }`.
+ * - **Stateful stubbing**: use `coEvery { foo() } answers { … }` (note the
+ *   block form). There is no `coAnswers` keyword. The `answers` block runs
+ *   on each call and has access to `args`, `nArgs`, `invocation`.
  * - For final Kotlin classes in production code: rely on `mockk-agent`
  *   (already on the test classpath). Don't open production classes for tests.
  *
- * ## 3. Flow assertions: Turbine.
+ * ## 5. Flow assertions: Turbine.
  *
  * ```
  * sut.state.test {
@@ -71,12 +106,16 @@ package com.github.reygnn.b2b
  * Do not collect into a `mutableListOf` and assert at the end — Turbine
  * surfaces ordering bugs that list-collection hides.
  *
- * ## 4. Test naming.
+ * For `MutableSharedFlow<Unit>` event signals, assert with `awaitItem()`
+ * returning `Unit` — emit with `emit(Unit)`, not `emit(any())`; MockK's
+ * `any()` is not a value, it's a matcher and panics outside a stubbing block.
+ *
+ * ## 6. Test naming.
  *
  * Backticks, `when X then Y` for behavioural tests, `returns Y when X` for
  * pure functions. The class under test is implicit in the file name.
  *
- * ## 5. What every layer's tests must cover.
+ * ## 7. What every layer's tests must cover.
  *
  * - Repository: maps DTO → domain, surfaces auth failures as Outcome.Error.
  * - UseCase: pure logic, no Android imports, no Room, no Retrofit.
@@ -85,7 +124,7 @@ package com.github.reygnn.b2b
  * - Service / orchestrator: state-machine transitions on synthetic
  *   PlayerState events; no real App Remote.
  *
- * ## 6. What we do not test here.
+ * ## 8. What we do not test here.
  *
  * - The Spotify API itself (we mock it).
  * - Compose rendering (covered by separate `androidTest` instrumented tests,

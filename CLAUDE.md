@@ -107,13 +107,22 @@ do not throw across layer boundaries.
    code_verifier` for the initial exchange and
    `grant_type=refresh_token, refresh_token, client_id` for the refresh.
 
-3. **`PlaybackOrchestratorService` needs a per-track latch.** Spotify App
+3. **The orchestrator's per-track latch is non-negotiable.** Spotify App
    Remote emits `PlayerState` events at several Hz; the trigger condition
    `duration - position < TRIGGER_MS` is true for the whole last 15 s of
-   every track. Without a `lastEnqueuedForTrackId` latch that resets only
-   on `state.track.uri` change, `enqueueNext()` fires dozens of times per
-   track and the queue fills with hundreds of tracks per minute. The
-   latch belongs **in the service**, not in any repository.
+   every track. Without the `lastEnqueuedForTrackId` latch in
+   `playback/PlaybackOrchestrator.kt` — which resets only when
+   `state.trackUri` differs from the latched URI — enqueues fire dozens
+   of times per track and the queue fills with hundreds of tracks per
+   minute. Keep that latch in the orchestrator (pure logic, JVM-testable),
+   not in any repository or in the foreground service shell.
+
+   The orchestrator consumes a `PlayerStateSource` (interface,
+   `playback/PlayerStateSource.kt`); the production binding is currently
+   `NoopPlayerStateSource` (no events). When the Spotify App Remote SDK
+   lands on the classpath (see README setup step 3), write an SDK-backed
+   `PlayerStateSource` and swap the `@Binds` in `BindsModule`. Do not
+   route App Remote calls anywhere else.
 
 4. **`PoolSyncWorker` rate-limit handling: in-run `delay`, not
    `Result.retry()`.** When `fetchAllTrackUrisForArtist(...)` returns

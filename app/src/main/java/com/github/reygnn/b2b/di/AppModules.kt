@@ -21,6 +21,8 @@ import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.domain.repository.RecentlyPlayedRepository
+import com.github.reygnn.b2b.playback.NoopPlayerStateSource
+import com.github.reygnn.b2b.playback.PlayerStateSource
 import dagger.Binds
 import dagger.Lazy
 import dagger.Module
@@ -135,4 +137,5 @@ abstract class BindsModule {
     @Binds abstract fun bindRecentlyPlayedRepository(impl: RecentlyPlayedRepositoryImpl): RecentlyPlayedRepository
     @Binds abstract fun bindPlaybackRepository(impl: PlaybackRepositoryImpl): PlaybackRepository
     @Binds abstract fun bindTokenStore(impl: TokenStoreImpl): TokenStore
+    @Binds abstract fun bindPlayerStateSource(impl: NoopPlayerStateSource): PlayerStateSource
 }

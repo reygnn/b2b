@@ -52,14 +52,41 @@ class PoolSyncWorkerTest {
             coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
         }
 
-    @Test fun `when rate limited then retries`() = runTest(mainRule.testScheduler) {
+    @Test fun `when rate limited then delays and succeeds on next attempt`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { dao.allIds() } returns listOf("a1")
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returnsMany listOf(
+                Outcome.Error.RateLimited(retryAfterSeconds = 2),
+                Outcome.Success(listOf(track("t1", "a1"))),
+            )
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify { poolRepo.upsertTracks(listOf(track("t1", "a1"))) }
+            coVerify(exactly = 2) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
+    @Test fun `when rate limited beyond budget then retries`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { dao.allIds() } returns listOf("a1")
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Error.RateLimited(retryAfterSeconds = 1)
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
+            coVerify(exactly = 3) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
+    @Test fun `when network error then retries`() = runTest(mainRule.testScheduler) {
         coEvery { dao.allIds() } returns listOf("a1")
-        coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-            Outcome.Error.RateLimited(retryAfterSeconds = 2)
+        coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns Outcome.Error.Network
 
         val result = build().doWork()
 
         assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
+        coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
     }
 
     @Test fun `when unauthenticated then fails`() = runTest(mainRule.testScheduler) {

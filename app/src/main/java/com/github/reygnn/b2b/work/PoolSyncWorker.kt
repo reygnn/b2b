@@ -10,6 +10,7 @@ import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.delay
 
 /**
  * Periodic sync: walk every whitelisted artist, fetch all album tracks, upsert
@@ -18,6 +19,14 @@ import dagger.assisted.AssistedInject
  * Triggers:
  *  - Periodic, every 24h, on UNMETERED network.
  *  - One-shot when the user adds an artist.
+ *
+ * Rate-limit handling: on 429, honour the Retry-After header in-run via
+ * `delay(...)` rather than returning `Result.retry()`. Spotify's rate-limit
+ * window is ~30 s while WorkManager's exponential backoff starts at 30 s
+ * and grows — staying in-run is strictly cheaper and preserves the artist-
+ * by-artist progress already accumulated. A per-artist budget caps how
+ * many consecutive 429s we wait through; once exceeded, we hand off to
+ * WorkManager's backoff via `Result.retry()`.
  */
 @HiltWorker
 class PoolSyncWorker @AssistedInject constructor(
@@ -36,15 +45,30 @@ class PoolSyncWorker @AssistedInject constructor(
         }
 
         for (id in artistIds) {
-            when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
-                is Outcome.Success -> poolRepo.upsertTracks(tracks.value)
-                is Outcome.Error.RateLimited -> return Result.retry()
-                is Outcome.Error.Network -> return Result.retry()
-                is Outcome.Error -> return Result.failure()
+            var rateLimitAttempts = 0
+            while (true) {
+                when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
+                    is Outcome.Success -> {
+                        poolRepo.upsertTracks(tracks.value)
+                        break
+                    }
+                    is Outcome.Error.RateLimited -> {
+                        if (++rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
+                            return Result.retry()
+                        }
+                        delay(tracks.retryAfterSeconds * 1000L)
+                    }
+                    is Outcome.Error.Network -> return Result.retry()
+                    is Outcome.Error -> return Result.failure()
+                }
             }
         }
 
         poolRepo.deleteTracksForRemovedArtists(artistIds.toSet())
         return Result.success()
+    }
+
+    private companion object {
+        const val MAX_RATE_LIMIT_ATTEMPTS = 3
     }
 }

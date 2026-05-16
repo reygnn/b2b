@@ -2,36 +2,31 @@ package com.github.reygnn.b2b.ui.whitelist
 
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Arrangement.SpaceBetween
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -46,21 +41,15 @@ import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateSnapshot
 import com.github.reygnn.b2b.service.PlaybackOrchestratorService
 import kotlinx.coroutines.delay
-import androidx.compose.foundation.layout.Arrangement.SpaceBetween
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.Alignment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WhitelistScreen(
+    onOpenArtists: () -> Unit,
     onOpenSettings: () -> Unit,
     vm: WhitelistViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
-    val whitelist by vm.whitelisted.collectAsState()
-    val results by vm.searchResults.collectAsState()
-    val isSearching by vm.isSearching.collectAsState()
-    val searchError by vm.searchError.collectAsState()
     val serviceRunning by vm.isServiceRunning.collectAsState()
     val statusSnapshot by vm.orchestratorStatus.collectAsState()
     val playerSnapshot by vm.playerState.collectAsState()
@@ -68,7 +57,6 @@ fun WhitelistScreen(
     val poolCount by vm.poolTrackCount.collectAsState()
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
-    var query by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         vm.serviceCommand.collect { cmd ->
@@ -116,72 +104,11 @@ fun WhitelistScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
-            val keyboard = LocalSoftwareKeyboardController.current
-            val submit: () -> Unit = {
-                vm.submitSearch(query)
-                keyboard?.hide()
-            }
-            Row(
+            OutlinedButton(
+                onClick = onOpenArtists,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("Search artists") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { submit() }),
-                )
-                IconButton(onClick = submit) { Text("🔍") }
-            }
-
-            if (isSearching) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                )
-            }
-
-            searchError?.let { reason ->
-                Text(
-                    text = reason,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-
-            if (results.isNotEmpty()) {
-                Text("Results", modifier = Modifier.padding(top = 16.dp))
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(results, key = { "r-${it.id}" }) { artist ->
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(artist.name)
-                            Button(onClick = { vm.add(artist) }) { Text("Add") }
-                        }
-                    }
-                }
-            } else if (query.isNotBlank() && !isSearching && searchError == null) {
-                Text(
-                    text = "No results",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
-            Text("Whitelisted (${whitelist.size})")
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(whitelist, key = { "w-${it.id}" }) { artist ->
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(artist.name)
-                        Button(onClick = { vm.remove(artist.id) }) { Text("Remove") }
-                    }
-                }
+                Text(stringResource(R.string.whitelist_manage_artists))
             }
         }
     }

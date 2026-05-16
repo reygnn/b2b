@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -58,14 +59,20 @@ fun LogScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    reverseLayout = true,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(entries.asReversed(), key = { "${it.epochMs}-${it.message.hashCode()}" }) {
-                        LogRow(it)
+                // SelectionContainer makes every row's text selectable +
+                // copyable via the standard long-press text-selection UI.
+                // Wraps the LazyColumn rather than each row so the user
+                // can sweep across multiple lines in one selection.
+                SelectionContainer(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxWidth(),
+                        reverseLayout = true,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(entries.asReversed(), key = { "${it.epochMs}-${it.message.hashCode()}" }) {
+                            LogRow(it)
+                        }
                     }
                 }
             }

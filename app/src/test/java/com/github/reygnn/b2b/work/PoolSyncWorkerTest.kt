@@ -86,6 +86,21 @@ class PoolSyncWorkerTest {
             coVerify(exactly = 2) { artistRepo.fetchAllTrackUrisForArtist("a1") }
         }
 
+    @Test fun `when rate limit retry-after exceeds cap then defers to WorkManager retry`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { dao.allIds() } returns listOf("a1")
+            // Spotify sometimes hands out absurdly long Retry-After values
+            // after sustained abuse — capped, we hand off to WorkManager.
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Error.RateLimited(retryAfterSeconds = 60_000)
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
+            // Single attempt — no in-run delay, no second fetch.
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
     @Test fun `when rate limited beyond budget then retries`() =
         runTest(mainRule.testScheduler) {
             coEvery { dao.allIds() } returns listOf("a1")

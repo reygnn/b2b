@@ -79,12 +79,25 @@ class PoolSyncWorker @AssistedInject constructor(
                         break
                     }
                     is Outcome.Error.RateLimited -> {
+                        // Spotify has been seen returning Retry-After values
+                        // in the tens of thousands (hours) when an account
+                        // hit a hard penalty. Sleeping in-run for that long
+                        // is useless — we'd never wake up before the
+                        // 10-minute worker timeout. Cap: anything above
+                        // MAX_RATE_LIMIT_WAIT_SECONDS hands off to
+                        // WorkManager's exponential backoff via retry(),
+                        // which will try again on a fresh schedule.
+                        val wait = tracks.retryAfterSeconds
+                        if (wait > MAX_RATE_LIMIT_WAIT_SECONDS) {
+                            log.log("sync: $id rate-limit ${wait}s exceeds cap, deferring → retry")
+                            return Result.retry()
+                        }
                         if (++rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
                             log.log("sync: $id rate-limit budget exceeded → retry")
                             return Result.retry()
                         }
-                        log.log("sync: $id rate-limited, sleeping ${tracks.retryAfterSeconds}s")
-                        delay(tracks.retryAfterSeconds * 1000L)
+                        log.log("sync: $id rate-limited, sleeping ${wait}s")
+                        delay(wait * 1000L)
                     }
                     is Outcome.Error.Network -> {
                         log.log("sync: $id network error → retry")
@@ -111,5 +124,10 @@ class PoolSyncWorker @AssistedInject constructor(
         // burns up to 30 s). Beyond this it's not throttling — it's
         // pathology, and we'd rather hand off to WorkManager retry.
         val MAX_RUN_DURATION = 10.minutes
+
+        // Spotifys typical Retry-After is 1–30 s. Real-world we've seen
+        // outliers in the tens of thousands of seconds after sustained
+        // hammering — those want WorkManager backoff, not an in-run wait.
+        const val MAX_RATE_LIMIT_WAIT_SECONDS = 120
     }
 }

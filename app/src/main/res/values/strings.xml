@@ -6,7 +6,7 @@
     <string name="notif_idle_no_device">Open Spotify to start session</string>
     <string name="notif_running">Keeping Spotify on your artists</string>
     <string name="notif_free_tier">Spotify Premium required for queue control</string>
-    <string name="notif_spotify_unavailable">Spotify app not available</string>
+    <string name="notif_spotify_unavailable">Spotify: %1$s</string>
 
     <!-- Login -->
     <string name="login_title">Sign in with Spotify</string>

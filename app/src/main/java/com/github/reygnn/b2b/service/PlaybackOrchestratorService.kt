@@ -75,7 +75,8 @@ class PlaybackOrchestratorService : Service() {
         OrchestratorStatus.Running -> getString(R.string.notif_running)
         OrchestratorStatus.FreeTier -> getString(R.string.notif_free_tier)
         OrchestratorStatus.NoActiveDevice -> getString(R.string.notif_idle_no_device)
-        is OrchestratorStatus.SpotifyUnavailable -> getString(R.string.notif_spotify_unavailable)
+        is OrchestratorStatus.SpotifyUnavailable ->
+            getString(R.string.notif_spotify_unavailable, status.reason)
     }
 
     private fun ensureChannel() {

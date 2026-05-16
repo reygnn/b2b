@@ -71,7 +71,8 @@ app/src/main/java/com/github/reygnn/b2b/
     repository/              Concrete impls — DTO→domain mapping, IO dispatch.
   work/PoolSyncWorker.kt     Periodic 24h sync, whitelist→albums→tracks→pool.
   service/                   PlaybackOrchestratorService (foreground, mediaPlayback).
-  playback/                  AntiRepeatRingBuffer (in-memory recency helper).
+  playback/                  PlaybackOrchestrator + PlayerStateSource (incl.
+                             AppRemotePlayerStateSource).
   ui/                        Compose screens + Hilt-injected ViewModels.
 ```
 

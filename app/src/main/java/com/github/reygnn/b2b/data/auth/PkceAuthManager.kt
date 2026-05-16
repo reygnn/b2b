@@ -1,10 +1,8 @@
 package com.github.reygnn.b2b.data.auth
 
-import android.content.Context
 import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
 import com.github.reygnn.b2b.di.IoDispatcher
 import com.github.reygnn.b2b.domain.model.Outcome
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -32,7 +30,6 @@ import javax.inject.Singleton
  */
 @Singleton
 class PkceAuthManager @Inject constructor(
-    @param:ApplicationContext private val context: Context,
     private val tokenStore: TokenStore,
     private val accountsApi: SpotifyAccountsApi,
     private val authEvents: AuthEventBus,

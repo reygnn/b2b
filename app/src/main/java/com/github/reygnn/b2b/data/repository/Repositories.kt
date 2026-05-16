@@ -24,13 +24,20 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Default HTTP-status mapping for the Spotify Web API. 404 is intentionally
+ * mapped to [Outcome.Error.Unknown] rather than [Outcome.Error.NoActiveDevice]
+ * — the "no active device" semantics are specific to the player endpoints
+ * (`/me/player/queue`); for everything else, a 404 just means the resource
+ * wasn't found. Endpoints that need the player-specific mapping handle 404
+ * inline before delegating to this function.
+ */
 private inline fun <T, R> Response<T>.toOutcome(transform: (T) -> R): Outcome<R> {
     if (isSuccessful) return body()?.let { Outcome.Success(transform(it)) }
         ?: Outcome.Error.Unknown("empty body")
     return when (code()) {
         401 -> Outcome.Error.Unauthenticated
         403 -> Outcome.Error.NotPremium
-        404 -> Outcome.Error.NoActiveDevice
         429 -> Outcome.Error.RateLimited(
             retryAfterSeconds = headers()["Retry-After"]?.toIntOrNull() ?: 1
         )
@@ -189,7 +196,17 @@ class PlaybackRepositoryImpl @Inject constructor(
 
     override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> = withContext(io) {
         try {
-            api.enqueue(uri, deviceId).toOutcome { }
+            val response = api.enqueue(uri, deviceId)
+            when {
+                // 204 No Content has a null body() — the generic toOutcome
+                // would file that under Outcome.Error.Unknown("empty body").
+                response.isSuccessful -> Outcome.Success(Unit)
+                // Spotify's `/me/player/queue` returns 404 specifically to
+                // signal "no active device" — translate explicitly rather
+                // than letting the generic mapper file it under Unknown.
+                response.code() == 404 -> Outcome.Error.NoActiveDevice
+                else -> response.toOutcome<Unit, Unit> { }
+            }
         } catch (e: IOException) {
             Outcome.Error.Network
         }

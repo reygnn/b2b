@@ -181,7 +181,6 @@ class PkceAuthManagerTest {
     }
 
     private fun newSut() = PkceAuthManager(
-        context = mockk(relaxed = true),
         tokenStore = tokenStore,
         accountsApi = api,
         authEvents = AuthEventBus(),

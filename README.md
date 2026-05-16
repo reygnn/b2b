@@ -112,7 +112,7 @@ app/src/main/java/com/github/reygnn/b2b/
 │   └── repository/      Implementierungen
 ├── work/                PoolSyncWorker
 ├── service/             PlaybackOrchestratorService
-├── playback/            AntiRepeatRingBuffer
+├── playback/            PlaybackOrchestrator + PlayerStateSource
 └── ui/                  Compose-Screens + ViewModels
 ```
 

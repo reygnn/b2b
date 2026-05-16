@@ -60,6 +60,11 @@ class LoginViewModel @Inject constructor(
             "user-modify-playback-state",
             "user-read-playback-state",
             "user-read-currently-playing",
+            // user-read-private gates the `product` field on GET /me. Without
+            // it, the response omits product entirely → PlaybackRepository's
+            // isPremium() reads null and the orchestrator emits FreeTier
+            // even for genuine Premium accounts.
+            "user-read-private",
         )
     }
 }

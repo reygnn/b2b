@@ -10,4 +10,5 @@ sealed interface OrchestratorStatus {
     data object Running : OrchestratorStatus
     data object FreeTier : OrchestratorStatus
     data object NoActiveDevice : OrchestratorStatus
+    data class SpotifyUnavailable(val reason: String) : OrchestratorStatus
 }

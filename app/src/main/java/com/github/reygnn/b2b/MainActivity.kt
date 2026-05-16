@@ -7,6 +7,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.lifecycle.lifecycleScope
+import com.github.reygnn.b2b.data.auth.AuthEvent
+import com.github.reygnn.b2b.data.auth.AuthEventBus
 import com.github.reygnn.b2b.data.auth.PkceAuthManager
 import com.github.reygnn.b2b.ui.nav.AppNavHost
 import dagger.hilt.android.AndroidEntryPoint
@@ -17,6 +19,7 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var pkceAuthManager: PkceAuthManager
+    @Inject lateinit var authEvents: AuthEventBus
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,9 +45,11 @@ class MainActivity : ComponentActivity() {
     private fun handleAuthRedirect(intent: Intent) {
         val data = intent.data ?: return
         if (data.scheme != AUTH_CALLBACK_SCHEME || data.host != AUTH_CALLBACK_HOST) return
-        // Spotify sends `?error=access_denied` when the user rejects on the
-        // consent screen. Surface to UI later; for now we just drop the redirect.
-        if (data.getQueryParameter("error") != null) return
+        val error = data.getQueryParameter("error")
+        if (error != null) {
+            lifecycleScope.launch { authEvents.emit(AuthEvent.LoginFailed(error)) }
+            return
+        }
         val code = data.getQueryParameter("code") ?: return
         lifecycleScope.launch {
             pkceAuthManager.exchangeAuthorizationCode(code)

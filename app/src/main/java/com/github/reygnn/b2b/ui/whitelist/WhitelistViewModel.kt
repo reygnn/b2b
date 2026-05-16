@@ -5,25 +5,24 @@ import androidx.lifecycle.viewModelScope
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
+import com.github.reygnn.b2b.service.ServiceState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class WhitelistUiState(
-    val whitelisted: List<Artist> = emptyList(),
-    val searchResults: List<Artist> = emptyList(),
-    val isSearching: Boolean = false,
-    val error: String? = null,
-)
-
 @HiltViewModel
 class WhitelistViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
+    serviceState: ServiceState,
 ) : ViewModel() {
 
     val whitelisted: StateFlow<List<Artist>> =
@@ -38,6 +37,19 @@ class WhitelistViewModel @Inject constructor(
 
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
+
+    val isServiceRunning: StateFlow<Boolean> = serviceState.running
+
+    /**
+     * Service toggle commands. Compose collects this and dispatches via
+     * `ContextCompat.startForegroundService` / `stopService` — those calls
+     * need a Context the ViewModel must not hold.
+     */
+    private val _serviceCommand = Channel<ServiceCommand>(
+        capacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val serviceCommand: Flow<ServiceCommand> = _serviceCommand.receiveAsFlow()
 
     fun search(query: String) {
         if (query.isBlank()) {
@@ -56,4 +68,11 @@ class WhitelistViewModel @Inject constructor(
 
     fun add(artist: Artist) = viewModelScope.launch { artistRepo.addToWhitelist(artist) }
     fun remove(id: String) = viewModelScope.launch { artistRepo.removeFromWhitelist(id) }
+
+    fun toggleService() {
+        val cmd = if (isServiceRunning.value) ServiceCommand.Stop else ServiceCommand.Start
+        _serviceCommand.trySend(cmd)
+    }
 }
+
+enum class ServiceCommand { Start, Stop }

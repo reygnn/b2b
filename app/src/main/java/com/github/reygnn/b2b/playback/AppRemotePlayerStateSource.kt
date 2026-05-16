@@ -9,9 +9,12 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
+
+class SpotifyNotInstalledException : IOException("Spotify app is not installed on this device")
 
 /**
  * Spotify App Remote-backed [PlayerStateSource]. Each call to [states]
@@ -38,6 +41,11 @@ class AppRemotePlayerStateSource @Inject constructor(
 ) : PlayerStateSource {
 
     override fun states(): Flow<PlayerState> = callbackFlow {
+        if (!SpotifyAppRemote.isSpotifyInstalled(context)) {
+            close(SpotifyNotInstalledException())
+            awaitClose { /* nothing to clean up */ }
+            return@callbackFlow
+        }
         val params = ConnectionParams.Builder(clientId)
             .setRedirectUri(redirectUri)
             .showAuthView(false)

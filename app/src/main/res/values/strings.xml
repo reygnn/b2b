@@ -6,4 +6,24 @@
     <string name="notif_idle_no_device">Open Spotify to start session</string>
     <string name="notif_running">Keeping Spotify on your artists</string>
     <string name="notif_free_tier">Spotify Premium required for queue control</string>
+    <string name="notif_spotify_unavailable">Spotify app not available</string>
+
+    <!-- Login -->
+    <string name="login_title">Sign in with Spotify</string>
+    <string name="login_blurb">B2B keeps your Spotify queue filled with tracks from artists you actually want to hear. Sign in to get started.</string>
+    <string name="login_button">Sign in with Spotify</string>
+    <string name="login_error">Login failed: %1$s</string>
+
+    <!-- Whitelist -->
+    <string name="whitelist_title">Whitelist</string>
+    <string name="service_start">Start session</string>
+    <string name="service_stop">Stop session</string>
+    <string name="service_running">Session running</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_logout">Sign out</string>
+    <string name="settings_manual_sync">Sync pool now</string>
+    <string name="settings_back">Back</string>
+    <string name="sync_enqueued">Sync enqueued</string>
 </resources>

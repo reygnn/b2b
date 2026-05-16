@@ -35,6 +35,7 @@ import javax.inject.Inject
 class PlaybackOrchestratorService : Service() {
 
     @Inject lateinit var orchestrator: PlaybackOrchestrator
+    @Inject lateinit var serviceState: ServiceState
     @Inject @DefaultDispatcher lateinit var dispatcher: CoroutineDispatcher
 
     private val supervisor = SupervisorJob()
@@ -46,6 +47,7 @@ class PlaybackOrchestratorService : Service() {
         scope = CoroutineScope(dispatcher + supervisor)
         ensureChannel()
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_running)))
+        serviceState.setRunning(true)
         scope.launch {
             orchestrator.status.collect { status ->
                 updateNotification(notificationTextFor(status))
@@ -63,6 +65,7 @@ class PlaybackOrchestratorService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        serviceState.setRunning(false)
         super.onDestroy()
     }
 
@@ -72,6 +75,7 @@ class PlaybackOrchestratorService : Service() {
         OrchestratorStatus.Running -> getString(R.string.notif_running)
         OrchestratorStatus.FreeTier -> getString(R.string.notif_free_tier)
         OrchestratorStatus.NoActiveDevice -> getString(R.string.notif_idle_no_device)
+        is OrchestratorStatus.SpotifyUnavailable -> getString(R.string.notif_spotify_unavailable)
     }
 
     private fun ensureChannel() {

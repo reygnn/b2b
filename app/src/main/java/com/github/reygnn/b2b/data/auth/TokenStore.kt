@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -13,6 +15,13 @@ interface TokenStore {
     suspend fun store(accessToken: String, refreshToken: String, expiresAtEpochMs: Long)
     suspend fun refresh(): String?
     suspend fun clear()
+
+    /**
+     * Reactive flag: true while a refresh token is stored, false otherwise.
+     * Updated synchronously by [store] and [clear]. UI uses this to gate
+     * between the login screen and the whitelist screen.
+     */
+    fun authState(): StateFlow<Boolean>
 }
 
 /**
@@ -38,6 +47,12 @@ class TokenStoreImpl @Inject constructor(
         )
     }
 
+    private val authStateFlow: MutableStateFlow<Boolean> by lazy {
+        MutableStateFlow(prefs.contains(KEY_REFRESH))
+    }
+
+    override fun authState(): StateFlow<Boolean> = authStateFlow
+
     override suspend fun accessToken(): String? = prefs.getString(KEY_ACCESS, null)
     override suspend fun refreshToken(): String? = prefs.getString(KEY_REFRESH, null)
 
@@ -47,12 +62,14 @@ class TokenStoreImpl @Inject constructor(
             .putString(KEY_REFRESH, refreshToken)
             .putLong(KEY_EXPIRES_AT, expiresAtEpochMs)
             .apply()
+        authStateFlow.value = true
     }
 
     override suspend fun refresh(): String? = refresher.get().refresh()
 
     override suspend fun clear() {
         prefs.edit().clear().apply()
+        authStateFlow.value = false
     }
 
     private companion object {

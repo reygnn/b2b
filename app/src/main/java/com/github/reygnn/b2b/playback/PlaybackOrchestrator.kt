@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.catch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -44,15 +45,19 @@ class PlaybackOrchestrator @Inject constructor(
 
     suspend fun run(antiRepeatWindow: Int) {
         var lastEnqueuedForTrackId: String? = null
-        source.states().collect { state ->
-            if (state.isPaused) return@collect
-            val remaining = state.durationMs - state.positionMs
-            if (remaining > TRIGGER_MS) return@collect
-            if (state.trackUri == lastEnqueuedForTrackId) return@collect
-            if (enqueueOnce(antiRepeatWindow)) {
-                lastEnqueuedForTrackId = state.trackUri
+        source.states()
+            .catch { e ->
+                _status.emit(OrchestratorStatus.SpotifyUnavailable(e.message ?: "connection failed"))
             }
-        }
+            .collect { state ->
+                if (state.isPaused) return@collect
+                val remaining = state.durationMs - state.positionMs
+                if (remaining > TRIGGER_MS) return@collect
+                if (state.trackUri == lastEnqueuedForTrackId) return@collect
+                if (enqueueOnce(antiRepeatWindow)) {
+                    lastEnqueuedForTrackId = state.trackUri
+                }
+            }
     }
 
     private suspend fun enqueueOnce(antiRepeatWindow: Int): Boolean {

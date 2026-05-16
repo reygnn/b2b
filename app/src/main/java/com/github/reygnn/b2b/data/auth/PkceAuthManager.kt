@@ -35,6 +35,7 @@ class PkceAuthManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val tokenStore: TokenStore,
     private val accountsApi: SpotifyAccountsApi,
+    private val authEvents: AuthEventBus,
     @param:Named("spotifyClientId") private val clientId: String,
     @param:Named("spotifyRedirectUri") private val redirectUri: String,
     @param:IoDispatcher private val io: CoroutineDispatcher,
@@ -56,10 +57,19 @@ class PkceAuthManager @Inject constructor(
     }
 
     suspend fun exchangeAuthorizationCode(code: String): Outcome<Unit> = withContext(io) {
+        val outcome = doExchange(code)
+        when (outcome) {
+            is Outcome.Success -> authEvents.emit(AuthEvent.LoginSucceeded)
+            is Outcome.Error -> authEvents.emit(AuthEvent.LoginFailed(outcome.describe()))
+        }
+        outcome
+    }
+
+    private suspend fun doExchange(code: String): Outcome<Unit> {
         val verifier = pendingVerifier
-            ?: return@withContext Outcome.Error.Unknown("No pending PKCE verifier")
+            ?: return Outcome.Error.Unknown("No pending PKCE verifier")
         pendingVerifier = null
-        try {
+        return try {
             val response = accountsApi.exchangeAuthorizationCode(
                 code = code,
                 redirectUri = redirectUri,
@@ -68,10 +78,10 @@ class PkceAuthManager @Inject constructor(
             )
             val body = response.body()
             if (!response.isSuccessful || body == null) {
-                return@withContext Outcome.Error.Unknown("HTTP ${response.code()}")
+                return Outcome.Error.Unknown("HTTP ${response.code()}")
             }
             val refresh = body.refreshToken
-                ?: return@withContext Outcome.Error.Unknown("No refresh_token in token response")
+                ?: return Outcome.Error.Unknown("No refresh_token in token response")
             tokenStore.store(
                 accessToken = body.accessToken,
                 refreshToken = refresh,
@@ -81,6 +91,15 @@ class PkceAuthManager @Inject constructor(
         } catch (_: IOException) {
             Outcome.Error.Network
         }
+    }
+
+    private fun Outcome.Error.describe(): String = when (this) {
+        is Outcome.Error.Network -> "Network error"
+        is Outcome.Error.Unauthenticated -> "Unauthenticated"
+        is Outcome.Error.NotPremium -> "Premium required"
+        is Outcome.Error.NoActiveDevice -> "No active device"
+        is Outcome.Error.RateLimited -> "Rate limited (retry in ${retryAfterSeconds}s)"
+        is Outcome.Error.Unknown -> message ?: "Unknown error"
     }
 
     /**

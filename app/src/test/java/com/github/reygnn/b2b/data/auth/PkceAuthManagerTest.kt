@@ -184,6 +184,7 @@ class PkceAuthManagerTest {
         context = mockk(relaxed = true),
         tokenStore = tokenStore,
         accountsApi = api,
+        authEvents = AuthEventBus(),
         clientId = "test-client",
         redirectUri = "b2b://callback",
         io = mainRule.testDispatcher,

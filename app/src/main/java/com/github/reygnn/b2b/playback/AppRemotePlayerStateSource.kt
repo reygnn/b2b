@@ -1,14 +1,17 @@
 package com.github.reygnn.b2b.playback
 
 import android.content.Context
+import com.github.reygnn.b2b.di.MainDispatcher
 import com.spotify.android.appremote.api.ConnectionParams
 import com.spotify.android.appremote.api.Connector
 import com.spotify.android.appremote.api.SpotifyAppRemote
 import com.spotify.protocol.client.Subscription
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Named
@@ -32,12 +35,21 @@ class SpotifyNotInstalledException : IOException("Spotify app is not installed o
  *
  * Requires the `<queries>` element in `AndroidManifest.xml` so PackageManager
  * can see Spotify on Android 11+.
+ *
+ * Threading: pinned to [mainDispatcher] via `flowOn`. `SpotifyAppRemote.connect`
+ * (and the SDK's internal callback routing) instantiate `Handler()` without an
+ * explicit Looper — that crashes on any non-looper thread with
+ * `Can't create handler inside thread Thread[DefaultDispatcher-worker-…] which
+ * has not called Looper.prepare()`. The orchestrator collects on Default;
+ * `flowOn` shifts only the producer block (connect, callbacks, awaitClose
+ * cleanup) onto Main.
  */
 @Singleton
 class AppRemotePlayerStateSource @Inject constructor(
     @param:ApplicationContext private val context: Context,
     @param:Named("spotifyClientId") private val clientId: String,
     @param:Named("spotifyRedirectUri") private val redirectUri: String,
+    @param:MainDispatcher private val mainDispatcher: CoroutineDispatcher,
 ) : PlayerStateSource {
 
     override fun states(): Flow<PlayerState> = callbackFlow {
@@ -84,5 +96,5 @@ class AppRemotePlayerStateSource @Inject constructor(
             subscription?.cancel()
             appRemote?.let { SpotifyAppRemote.disconnect(it) }
         }
-    }
+    }.flowOn(mainDispatcher)
 }

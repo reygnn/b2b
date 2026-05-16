@@ -42,6 +42,7 @@ private inline fun <T, R> Response<T>.toOutcome(transform: (T) -> R): Outcome<R>
 class ArtistRepositoryImpl @Inject constructor(
     private val api: SpotifyApi,
     private val dao: WhitelistDao,
+    private val poolSyncTrigger: PoolSyncTrigger,
     @param:IoDispatcher private val io: CoroutineDispatcher,
 ) : ArtistRepository {
 
@@ -69,6 +70,7 @@ class ArtistRepositoryImpl @Inject constructor(
                 addedAtEpochMs = System.currentTimeMillis(),
             )
         )
+        poolSyncTrigger.triggerAfterWhitelistChange()
     }
 
     override suspend fun removeFromWhitelist(artistId: String) = withContext(io) {

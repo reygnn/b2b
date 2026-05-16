@@ -16,7 +16,9 @@ import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PlaybackRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PoolRepositoryImpl
+import com.github.reygnn.b2b.data.repository.PoolSyncTrigger
 import com.github.reygnn.b2b.data.repository.RecentlyPlayedRepositoryImpl
+import com.github.reygnn.b2b.data.repository.WorkManagerPoolSyncTrigger
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
@@ -138,4 +140,5 @@ abstract class BindsModule {
     @Binds abstract fun bindPlaybackRepository(impl: PlaybackRepositoryImpl): PlaybackRepository
     @Binds abstract fun bindTokenStore(impl: TokenStoreImpl): TokenStore
     @Binds abstract fun bindPlayerStateSource(impl: AppRemotePlayerStateSource): PlayerStateSource
+    @Binds abstract fun bindPoolSyncTrigger(impl: WorkManagerPoolSyncTrigger): PoolSyncTrigger
 }

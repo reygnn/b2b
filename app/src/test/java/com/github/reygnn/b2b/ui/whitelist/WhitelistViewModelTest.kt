@@ -52,52 +52,66 @@ class WhitelistViewModelTest {
         every { poolSyncObserver.observeIsSyncing() } returns MutableStateFlow(false)
     }
 
-    @Test fun `search debounces rapid input and calls API once with last query`() =
+    @Test fun `submitSearch fires exactly one API call per submit`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists(any()) } returns Outcome.Success(emptyList())
             val sut = newSut()
 
-            sut.search("a")
-            sut.search("ab")
-            sut.search("abc")
-            advanceTimeBy(299)
+            // Typing is no longer reactive — submit triggers the call.
+            sut.submitSearch("abc")
             runCurrent()
-            coVerify(exactly = 0) { artistRepo.searchArtists(any()) }
 
-            advanceTimeBy(2)
-            runCurrent()
             coVerify(exactly = 1) { artistRepo.searchArtists("abc") }
         }
 
-    @Test fun `search with blank query clears results without API call`() =
+    @Test fun `submitSearch with blank query clears results without API call`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("abc") } returns
                 Outcome.Success(listOf(artistOf("1", "Found")))
             val sut = newSut()
 
-            sut.search("abc")
-            advanceTimeBy(301)
+            sut.submitSearch("abc")
             runCurrent()
             assertThat(sut.searchResults.value).hasSize(1)
 
-            sut.search("")
-            advanceTimeBy(301)
+            sut.submitSearch("")
             runCurrent()
             assertThat(sut.searchResults.value).isEmpty()
             coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
         }
 
-    @Test fun `search Error outcome surfaces as empty results`() =
+    @Test fun `submitSearch Error outcome surfaces as empty results`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("x") } returns Outcome.Error.RateLimited(retryAfterSeconds = 1)
             val sut = newSut()
 
-            sut.search("x")
-            advanceTimeBy(301)
+            sut.submitSearch("x")
             runCurrent()
 
             assertThat(sut.searchResults.value).isEmpty()
             assertThat(sut.isSearching.value).isFalse()
+        }
+
+    @Test fun `submitSearch cancels the prior in-flight search`() =
+        runTest(mainRule.testScheduler) {
+            // First submit's coroutine is left pending; second one should
+            // replace it so the stale result never lands.
+            val gate = kotlinx.coroutines.CompletableDeferred<Outcome<List<Artist>>>()
+            coEvery { artistRepo.searchArtists("stale") } coAnswers { gate.await() }
+            coEvery { artistRepo.searchArtists("fresh") } returns
+                Outcome.Success(listOf(artistOf("1", "Fresh")))
+            val sut = newSut()
+
+            sut.submitSearch("stale")
+            runCurrent()
+            sut.submitSearch("fresh")
+            runCurrent()
+
+            assertThat(sut.searchResults.value).containsExactly(artistOf("1", "Fresh"))
+            // Resolve the stale call after the fact — it must not overwrite.
+            gate.complete(Outcome.Success(listOf(artistOf("99", "Stale"))))
+            runCurrent()
+            assertThat(sut.searchResults.value).containsExactly(artistOf("1", "Fresh"))
         }
 
     @Test fun `add and remove delegate to repository`() = runTest(mainRule.testScheduler) {

@@ -16,7 +16,7 @@ import com.github.reygnn.b2b.playback.PlayerStateSnapshot
 import com.github.reygnn.b2b.playback.PreviewTrackHolder
 import com.github.reygnn.b2b.service.ServiceState
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -24,15 +24,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-@OptIn(FlowPreview::class)
 @HiltViewModel
 class WhitelistViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
@@ -61,7 +57,9 @@ class WhitelistViewModel @Inject constructor(
     private val _searchError = MutableStateFlow<String?>(null)
     val searchError: StateFlow<String?> = _searchError.asStateFlow()
 
-    private val _query = MutableStateFlow("")
+    // Single in-flight search job. A new submit cancels the previous one so
+    // a slow request doesn't trample fresh results.
+    private var searchJob: Job? = null
 
     val isServiceRunning: StateFlow<Boolean> = serviceState.running
 
@@ -93,36 +91,38 @@ class WhitelistViewModel @Inject constructor(
     )
     val serviceCommand: Flow<ServiceCommand> = _serviceCommand.receiveAsFlow()
 
-    init {
-        viewModelScope.launch {
-            _query
-                .debounce(SEARCH_DEBOUNCE_MS)
-                .distinctUntilChanged()
-                .collectLatest { query ->
-                    if (query.isBlank()) {
-                        _searchResults.value = emptyList()
-                        _isSearching.value = false
-                        _searchError.value = null
-                        return@collectLatest
-                    }
-                    _isSearching.value = true
-                    _searchError.value = null
-                    when (val r = artistRepo.searchArtists(query)) {
-                        is Outcome.Success -> {
-                            _searchResults.value = r.value
-                        }
-                        is Outcome.Error -> {
-                            _searchResults.value = emptyList()
-                            _searchError.value = describeError(r)
-                        }
-                    }
-                    _isSearching.value = false
-                }
+    /**
+     * Explicit search trigger — wired to the magnifying-glass button and the
+     * keyboard IME "Search" action. Replaces the earlier 300 ms-debounce
+     * behaviour: every distinct pause longer than the debounce window was a
+     * fresh /search call, and at scale that contributed to Spotify
+     * rate-limit penalties. Now Spotify sees exactly one call per user
+     * submit.
+     *
+     * Blank query short-circuits: it clears results without hitting the API.
+     */
+    fun submitSearch(query: String) {
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _searchResults.value = emptyList()
+            _isSearching.value = false
+            _searchError.value = null
+            return
         }
-    }
-
-    fun search(query: String) {
-        _query.value = query
+        searchJob = viewModelScope.launch {
+            _isSearching.value = true
+            _searchError.value = null
+            when (val r = artistRepo.searchArtists(query)) {
+                is Outcome.Success -> {
+                    _searchResults.value = r.value
+                }
+                is Outcome.Error -> {
+                    _searchResults.value = emptyList()
+                    _searchError.value = describeError(r)
+                }
+            }
+            _isSearching.value = false
+        }
     }
 
     fun add(artist: Artist) = viewModelScope.launch { artistRepo.addToWhitelist(artist) }
@@ -146,9 +146,6 @@ class WhitelistViewModel @Inject constructor(
         is Outcome.Error.Unknown -> error.message ?: "Unknown error"
     }
 
-    private companion object {
-        const val SEARCH_DEBOUNCE_MS = 300L
-    }
 }
 
 enum class ServiceCommand { Start, Stop }

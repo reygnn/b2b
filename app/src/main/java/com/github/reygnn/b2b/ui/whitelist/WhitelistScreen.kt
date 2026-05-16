@@ -20,6 +20,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -112,15 +116,27 @@ fun WhitelistScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
-            OutlinedTextField(
-                value = query,
-                onValueChange = {
-                    query = it
-                    vm.search(it)
-                },
-                label = { Text("Search artists") },
+            val keyboard = LocalSoftwareKeyboardController.current
+            val submit: () -> Unit = {
+                vm.submitSearch(query)
+                keyboard?.hide()
+            }
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-            )
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search artists") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { submit() }),
+                )
+                IconButton(onClick = submit) { Text("🔍") }
+            }
 
             if (isSearching) {
                 LinearProgressIndicator(

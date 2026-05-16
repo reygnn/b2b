@@ -3,6 +3,8 @@ package com.github.reygnn.b2b.ui.whitelist
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.diagnostics.LogBuffer
+import com.github.reygnn.b2b.diagnostics.LogEntry
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
@@ -30,6 +32,7 @@ import javax.inject.Inject
 @HiltViewModel
 class WhitelistViewModel @Inject constructor(
     private val orchestrator: PlaybackOrchestrator,
+    private val logBuffer: LogBuffer,
     poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
     statusHolder: OrchestratorStatusHolder,
@@ -59,6 +62,8 @@ class WhitelistViewModel @Inject constructor(
         initialValue = false,
     )
 
+    val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
+
     private val _serviceCommand = Channel<ServiceCommand>(
         capacity = 4,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -73,6 +78,8 @@ class WhitelistViewModel @Inject constructor(
     fun skipNext() {
         viewModelScope.launch { orchestrator.skipPreview() }
     }
+
+    fun clearLog() = logBuffer.clear()
 }
 
 enum class ServiceCommand { Start, Stop }

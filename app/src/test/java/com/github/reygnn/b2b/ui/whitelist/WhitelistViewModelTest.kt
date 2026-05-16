@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.ui.whitelist
 
 import app.cash.turbine.test
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.diagnostics.LogBuffer
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.playback.OrchestratorStatus
@@ -38,6 +39,7 @@ class WhitelistViewModelTest {
     private val orchestrator: PlaybackOrchestrator = mockk(relaxUnitFun = true) {
         coEvery { skipPreview() } returns Unit
     }
+    private val logBuffer = LogBuffer()
 
     @Before fun stubDefaults() {
         every { poolRepo.observeTrackCount() } returns MutableStateFlow(0)
@@ -141,8 +143,26 @@ class WhitelistViewModelTest {
             coVerify(exactly = 1) { orchestrator.skipPreview() }
         }
 
+    @Test fun `logEntries reflects the LogBuffer`() = runTest(mainRule.testScheduler) {
+        val sut = newSut()
+        sut.logEntries.test {
+            assertThat(awaitItem()).isEmpty()
+            logBuffer.log("hello")
+            assertThat(awaitItem()).hasSize(1)
+            cancelAndConsumeRemainingEvents()
+        }
+    }
+
+    @Test fun `clearLog empties the buffer`() = runTest(mainRule.testScheduler) {
+        logBuffer.log("noise")
+        val sut = newSut()
+        sut.clearLog()
+        assertThat(sut.logEntries.value).isEmpty()
+    }
+
     private fun newSut() = WhitelistViewModel(
         orchestrator = orchestrator,
+        logBuffer = logBuffer,
         poolRepo = poolRepo,
         poolSyncObserver = poolSyncObserver,
         statusHolder = statusHolder,

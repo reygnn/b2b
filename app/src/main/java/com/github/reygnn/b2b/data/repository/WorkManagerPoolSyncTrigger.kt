@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.github.reygnn.b2b.work.PoolSyncWorkNames
 import com.github.reygnn.b2b.work.PoolSyncWorker
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -23,13 +24,9 @@ class WorkManagerPoolSyncTrigger @Inject constructor(
     override fun triggerAfterWhitelistChange() {
         val request = OneTimeWorkRequestBuilder<PoolSyncWorker>().build()
         WorkManager.getInstance(context).enqueueUniqueWork(
-            WORK_NAME,
+            PoolSyncWorkNames.AFTER_WHITELIST,
             ExistingWorkPolicy.KEEP,
             request,
         )
-    }
-
-    private companion object {
-        const val WORK_NAME = "pool_sync_after_whitelist_change"
     }
 }

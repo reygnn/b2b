@@ -75,6 +75,14 @@ class AppRemotePlayerStateSource @Inject constructor(
                         trySend(
                             PlayerState(
                                 trackUri = track.uri,
+                                trackName = track.name.orEmpty(),
+                                // Track.artist is non-null per the SDK's
+                                // Java schema, but missing @NonNull markers
+                                // mean Kotlin sees it as platform type —
+                                // be defensive, fall back to artists[0].
+                                artistName = track.artist?.name
+                                    ?: track.artists?.firstOrNull()?.name
+                                    ?: "",
                                 positionMs = sdkState.playbackPosition,
                                 durationMs = track.duration,
                                 isPaused = sdkState.isPaused,

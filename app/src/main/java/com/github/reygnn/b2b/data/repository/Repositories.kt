@@ -180,6 +180,10 @@ class PoolRepositoryImpl @Inject constructor(
 
     override suspend fun trackCount(): Int = withContext(io) { dao.count() }
 
+    override fun observeTrackCount(): Flow<Int> = dao.observeCount()
+
+    override fun observeLatestSyncEpochMs(): Flow<Long?> = dao.observeLatestSyncEpochMs()
+
     override suspend fun randomTrackExcluding(excludedUris: Set<String>): Track? = withContext(io) {
         val entity = if (excludedUris.isEmpty()) dao.random()
         else dao.randomExcluding(excludedUris.toList())

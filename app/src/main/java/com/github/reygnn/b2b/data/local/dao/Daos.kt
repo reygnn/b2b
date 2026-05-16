@@ -32,6 +32,12 @@ interface PoolTrackDao {
     @Query("SELECT COUNT(*) FROM pool_track")
     suspend fun count(): Int
 
+    @Query("SELECT COUNT(*) FROM pool_track")
+    fun observeCount(): Flow<Int>
+
+    @Query("SELECT MAX(lastSyncedEpochMs) FROM pool_track")
+    fun observeLatestSyncEpochMs(): Flow<Long?>
+
     @Query("SELECT COUNT(*) FROM pool_track WHERE artistId = :artistId")
     suspend fun countForArtist(artistId: String): Int
 

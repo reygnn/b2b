@@ -4,11 +4,15 @@ import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.PlaybackRepository
 import com.github.reygnn.b2b.domain.repository.RecentlyPlayedRepository
 import com.github.reygnn.b2b.domain.usecase.PickNextTrackUseCase
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,13 +26,19 @@ import javax.inject.Singleton
  * shell that hosts this orchestrator is in
  * [com.github.reygnn.b2b.service.PlaybackOrchestratorService].
  *
- * Per-track latch (`lastEnqueuedForTrackId`): Spotify App Remote emits
- * `PlayerState` events at several Hz. The trigger condition
- * `duration - position < TRIGGER_MS` is true for the entire last 15 s of
- * every track; without the latch we would enqueue dozens of tracks per
- * track played. The latch resets implicitly when the current track URI in
- * a state event differs from the latched URI — i.e. when Spotify advances
- * to the next track (the one we just enqueued, or a manually queued one).
+ * Trigger model: position-extrapolated timer.
+ *
+ * App Remote (at least the 0.8.0 AAR shipped here) emits `PlayerState`
+ * primarily on state changes (track change, pause/play, seek, buffering) —
+ * NOT periodically while playback ticks forward. Waiting for an event with
+ * `duration - position < TRIGGER_MS` therefore never fires for tracks where
+ * Spotify emits only at the start. Instead, on each event we compute
+ * `delay = duration - position - TRIGGER_MS` and arm a coroutine that
+ * suspends for that long before calling [enqueueOnce]. Each new event
+ * cancels the pending timer and re-arms with the fresh position (handles
+ * seek, pause, re-buffering). Pause cancels without re-arming. The
+ * per-track latch [lastEnqueuedForTrackId] still prevents a double-fire if
+ * multiple events for the same URI arrive after the timer already ran.
  */
 @Singleton
 class PlaybackOrchestrator @Inject constructor(
@@ -36,6 +46,7 @@ class PlaybackOrchestrator @Inject constructor(
     private val pickNext: PickNextTrackUseCase,
     private val playback: PlaybackRepository,
     private val recents: RecentlyPlayedRepository,
+    private val playerStateHolder: PlayerStateHolder,
 ) {
     private val _status = MutableSharedFlow<OrchestratorStatus>(
         extraBufferCapacity = 4,
@@ -43,19 +54,50 @@ class PlaybackOrchestrator @Inject constructor(
     )
     val status: SharedFlow<OrchestratorStatus> = _status.asSharedFlow()
 
-    suspend fun run(antiRepeatWindow: Int) {
+    suspend fun run(antiRepeatWindow: Int): Unit = coroutineScope {
         var lastEnqueuedForTrackId: String? = null
+        var lastSeenTrackId: String? = null
+        var triggerJob: Job? = null
+
         source.states()
             .catch { e ->
                 _status.emit(OrchestratorStatus.SpotifyUnavailable(e.message ?: "connection failed"))
             }
             .collect { state ->
+                // Mirror the raw state for the UI's position/countdown line.
+                // The SDK only emits on state changes, so each event is a
+                // fresh anchor for time-based extrapolation.
+                playerStateHolder.record(state)
+
+                // Track-change beacon: emit Listening exactly once per new URI,
+                // independent of the trigger arming below. Lets the UI show
+                // "Currently: …" between enqueues and prove the App Remote
+                // connection is producing events.
+                if (state.trackUri != lastSeenTrackId) {
+                    _status.emit(
+                        OrchestratorStatus.Listening(
+                            trackName = state.trackName,
+                            artistName = state.artistName,
+                            trackUri = state.trackUri,
+                        )
+                    )
+                    lastSeenTrackId = state.trackUri
+                }
+
+                // Re-arm policy: every new state cancels the pending timer and
+                // recomputes from the fresh position. Handles seek, pause/resume,
+                // and track change uniformly. Paused or already-latched URIs
+                // leave the timer cancelled and don't re-arm.
+                triggerJob?.cancel()
                 if (state.isPaused) return@collect
-                val remaining = state.durationMs - state.positionMs
-                if (remaining > TRIGGER_MS) return@collect
                 if (state.trackUri == lastEnqueuedForTrackId) return@collect
-                if (enqueueOnce(antiRepeatWindow)) {
-                    lastEnqueuedForTrackId = state.trackUri
+
+                val delayMs = state.durationMs - state.positionMs - TRIGGER_MS
+                triggerJob = launch {
+                    if (delayMs > 0) delay(delayMs)
+                    if (enqueueOnce(antiRepeatWindow)) {
+                        lastEnqueuedForTrackId = state.trackUri
+                    }
                 }
             }
     }
@@ -66,7 +108,14 @@ class PlaybackOrchestrator @Inject constructor(
                 _status.emit(OrchestratorStatus.FreeTier)
                 return false
             }
-            is Outcome.Error -> return false // transient — no status change, retry on next state
+            is Outcome.Error -> {
+                // Surface transient errors instead of silently retrying — without
+                // this branch, repeated isPremium() failures during the trigger
+                // window leave the UI stuck on the prior status with no
+                // explanation of why nothing is being enqueued.
+                _status.emit(OrchestratorStatus.SpotifyUnavailable(premium.describe("premium check")))
+                return false
+            }
         }
         val device = when (val d = playback.activeDeviceId()) {
             is Outcome.Success -> d.value ?: run {
@@ -74,7 +123,10 @@ class PlaybackOrchestrator @Inject constructor(
                 return false
             }
             is Outcome.Error -> {
-                _status.emit(OrchestratorStatus.NoActiveDevice)
+                // Network/rate-limit/unknown errors from /me/player/devices —
+                // not the same as "no active device" (which is Success(null)).
+                // Surface them so the user knows the API call itself failed.
+                _status.emit(OrchestratorStatus.SpotifyUnavailable(d.describe("devices lookup")))
                 return false
             }
         }
@@ -84,8 +136,28 @@ class PlaybackOrchestrator @Inject constructor(
         if (enqueueResult !is Outcome.Success) return false
         recents.record(pick.value.uri)
         recents.trim(antiRepeatWindow * 2)
-        _status.emit(OrchestratorStatus.Running)
+        _status.emit(
+            OrchestratorStatus.Enqueued(
+                trackName = pick.value.name,
+                artistName = pick.value.artistName,
+                trackUri = pick.value.uri,
+            )
+        )
         return true
+    }
+
+    /**
+     * Folds an [Outcome.Error] into a one-line reason for [OrchestratorStatus.SpotifyUnavailable].
+     * The label identifies which API call failed so the UI can show
+     * "Spotify: premium check failed: HTTP 429: Too Many Requests".
+     */
+    private fun Outcome.Error.describe(label: String): String = "$label failed: " + when (this) {
+        Outcome.Error.Network -> "network"
+        Outcome.Error.Unauthenticated -> "unauthenticated"
+        Outcome.Error.NotPremium -> "premium required"
+        Outcome.Error.NoActiveDevice -> "no active device"
+        is Outcome.Error.RateLimited -> "rate limited (retry in ${retryAfterSeconds}s)"
+        is Outcome.Error.Unknown -> message ?: "unknown"
     }
 
     companion object {

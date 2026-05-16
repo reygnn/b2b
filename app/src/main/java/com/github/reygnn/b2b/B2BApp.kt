@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.github.reygnn.b2b.work.PoolSyncWorkNames
 import com.github.reygnn.b2b.work.PoolSyncWorker
 import dagger.hilt.android.HiltAndroidApp
 import java.util.concurrent.TimeUnit
@@ -41,13 +42,9 @@ class B2BApp : Application(), Configuration.Provider {
         // restarts), don't reset its schedule. The unique name guarantees a
         // single PoolSyncWorker chain regardless of how often onCreate runs.
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            POOL_SYNC_WORK_NAME,
+            PoolSyncWorkNames.PERIODIC,
             ExistingPeriodicWorkPolicy.KEEP,
             request,
         )
-    }
-
-    private companion object {
-        const val POOL_SYNC_WORK_NAME = "pool_sync"
     }
 }

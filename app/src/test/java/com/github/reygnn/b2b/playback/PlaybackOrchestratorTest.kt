@@ -16,6 +16,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -30,6 +31,7 @@ class PlaybackOrchestratorTest {
     private val pickNext: PickNextTrackUseCase = mockk()
     private val playback: PlaybackRepository = mockk()
     private val recents: RecentlyPlayedRepository = mockk(relaxUnitFun = true)
+    private val playerStateHolder = PlayerStateHolder()
 
     private val playerStates = MutableSharedFlow<PlayerState>(
         extraBufferCapacity = 16,
@@ -39,7 +41,7 @@ class PlaybackOrchestratorTest {
         override fun states(): Flow<PlayerState> = playerStates
     }
 
-    private val sut = PlaybackOrchestrator(source, pickNext, playback, recents)
+    private val sut = PlaybackOrchestrator(source, pickNext, playback, recents, playerStateHolder)
 
     @Before fun stubHappyPath() {
         coEvery { playback.isPremium() } returns Outcome.Success(true)
@@ -62,6 +64,99 @@ class PlaybackOrchestratorTest {
             job.cancel()
         }
 
+    @Test fun `emits Listening on new track URI before any trigger check`() =
+        runTest(mainRule.testScheduler) {
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                // Mid-track state: nothing should fire from the trigger.
+                playerStates.emit(
+                    PlayerState(
+                        trackUri = "spotify:track:1",
+                        trackName = "First",
+                        artistName = "ArtistA",
+                        positionMs = 10_000,
+                        durationMs = 200_000,
+                        isPaused = false,
+                    )
+                )
+                runCurrent()
+
+                assertThat(awaitItem()).isEqualTo(
+                    OrchestratorStatus.Listening(
+                        trackName = "First",
+                        artistName = "ArtistA",
+                        trackUri = "spotify:track:1",
+                    )
+                )
+                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `Listening fires once per URI even with many state events`() =
+        runTest(mainRule.testScheduler) {
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                repeat(5) {
+                    playerStates.emit(
+                        PlayerState(
+                            trackUri = "spotify:track:1",
+                            trackName = "First",
+                            artistName = "ArtistA",
+                            positionMs = 10_000L + it * 100,
+                            durationMs = 200_000,
+                            isPaused = false,
+                        )
+                    )
+                }
+                runCurrent()
+
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                expectNoEvents()
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `emits Enqueued status with track info on successful enqueue`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { pickNext(50) } returns Outcome.Success(
+                Track(
+                    uri = "spotify:track:next",
+                    name = "Some Song",
+                    artistId = "artist-1",
+                    artistName = "Some Artist",
+                    durationMs = 200_000,
+                )
+            )
+
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                playerStates.emit(nearEnd("spotify:track:1"))
+                runCurrent()
+
+                // First: Listening for the new URI.
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                // Then: Enqueued, because remaining < TRIGGER_MS.
+                assertThat(awaitItem()).isEqualTo(
+                    OrchestratorStatus.Enqueued(
+                        trackName = "Some Song",
+                        artistName = "Some Artist",
+                        trackUri = "spotify:track:next",
+                    )
+                )
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
     @Test fun `latch prevents re-fire on subsequent emissions for the same track`() =
         runTest(mainRule.testScheduler) {
             val job = launch { sut.run(50) }
@@ -79,7 +174,14 @@ class PlaybackOrchestratorTest {
             val job = launch { sut.run(50) }
             runCurrent()
 
+            // runCurrent between emits so the first trigger's enqueueOnce
+            // chain (isPremium → activeDeviceId → enqueue → latch) finishes
+            // before the second emit's collect cancels the still-armed job.
+            // In production the same race exists if two PlayerState events
+            // arrive within a millisecond — the second re-arms with current
+            // info and fires anew, so eventual correctness is preserved.
             playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
             playerStates.emit(nearEnd("spotify:track:2"))
             runCurrent()
 
@@ -107,6 +209,8 @@ class PlaybackOrchestratorTest {
             playerStates.emit(
                 PlayerState(
                     trackUri = "spotify:track:1",
+                    trackName = "n",
+                    artistName = "a",
                     positionMs = 10_000,
                     durationMs = 200_000,
                     isPaused = false,
@@ -129,6 +233,8 @@ class PlaybackOrchestratorTest {
                 playerStates.emit(nearEnd("spotify:track:1"))
                 runCurrent()
 
+                // Listening first, then FreeTier from the enqueue path.
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
                 assertThat(awaitItem()).isEqualTo(OrchestratorStatus.FreeTier)
                 coVerify(exactly = 0) { playback.enqueue(any(), any()) }
                 job.cancel()
@@ -136,7 +242,7 @@ class PlaybackOrchestratorTest {
             }
         }
 
-    @Test fun `emits NoActiveDevice status and skips enqueue when no active device`() =
+    @Test fun `emits NoActiveDevice when devices lookup returns null`() =
         runTest(mainRule.testScheduler) {
             coEvery { playback.activeDeviceId() } returns Outcome.Success(null)
 
@@ -147,11 +253,154 @@ class PlaybackOrchestratorTest {
                 playerStates.emit(nearEnd("spotify:track:1"))
                 runCurrent()
 
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
                 assertThat(awaitItem()).isEqualTo(OrchestratorStatus.NoActiveDevice)
                 coVerify(exactly = 0) { playback.enqueue(any(), any()) }
                 job.cancel()
                 cancelAndConsumeRemainingEvents()
             }
+        }
+
+    @Test fun `emits SpotifyUnavailable when premium check errors`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { playback.isPremium() } returns Outcome.Error.Network
+
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                playerStates.emit(nearEnd("spotify:track:1"))
+                runCurrent()
+
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                val errorStatus = awaitItem()
+                assertThat(errorStatus).isInstanceOf(OrchestratorStatus.SpotifyUnavailable::class.java)
+                assertThat((errorStatus as OrchestratorStatus.SpotifyUnavailable).reason)
+                    .contains("premium check")
+                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `emits SpotifyUnavailable when devices lookup errors`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { playback.activeDeviceId() } returns
+                Outcome.Error.Unknown("HTTP 500: boom")
+
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                playerStates.emit(nearEnd("spotify:track:1"))
+                runCurrent()
+
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                val errorStatus = awaitItem()
+                assertThat(errorStatus).isInstanceOf(OrchestratorStatus.SpotifyUnavailable::class.java)
+                val reason = (errorStatus as OrchestratorStatus.SpotifyUnavailable).reason
+                assertThat(reason).contains("devices lookup")
+                assertThat(reason).contains("HTTP 500: boom")
+                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `timer fires after duration minus position minus TRIGGER_MS`() =
+        runTest(mainRule.testScheduler) {
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            // 200 s track, currently 10 s in → delay until trigger = 175 s.
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 10_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            advanceTimeBy(174_999)
+            runCurrent()
+            coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+
+            advanceTimeBy(2)
+            runCurrent()
+            coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+            job.cancel()
+        }
+
+    @Test fun `new state cancels pending timer and re-arms with fresh position`() =
+        runTest(mainRule.testScheduler) {
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 10_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            advanceTimeBy(50_000)
+            runCurrent()
+
+            // Mid-track seek to 180 s → new delay until trigger = 5 s.
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 180_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            advanceTimeBy(4_999)
+            runCurrent()
+            coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+
+            advanceTimeBy(2)
+            runCurrent()
+            coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+            job.cancel()
+        }
+
+    @Test fun `pause cancels pending timer without re-arming`() =
+        runTest(mainRule.testScheduler) {
+            val job = launch { sut.run(50) }
+            runCurrent()
+
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 10_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            advanceTimeBy(100_000)
+            runCurrent()
+
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:1",
+                    trackName = "n", artistName = "a",
+                    positionMs = 110_000,
+                    durationMs = 200_000,
+                    isPaused = true,
+                )
+            )
+
+            // Advance well past the original trigger point — must not fire.
+            advanceTimeBy(200_000)
+            runCurrent()
+            coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+            job.cancel()
         }
 
     @Test fun `transient failure leaves latch open so next emission retries`() =
@@ -167,6 +416,7 @@ class PlaybackOrchestratorTest {
             runCurrent()
 
             playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
             playerStates.emit(nearEnd("spotify:track:1"))
             runCurrent()
 
@@ -176,6 +426,8 @@ class PlaybackOrchestratorTest {
 
     private fun nearEnd(uri: String, remainingMs: Long = 8_000) = PlayerState(
         trackUri = uri,
+        trackName = "Track",
+        artistName = "Artist",
         positionMs = 200_000 - remainingMs,
         durationMs = 200_000,
         isPaused = false,

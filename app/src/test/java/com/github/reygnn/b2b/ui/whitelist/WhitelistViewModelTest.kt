@@ -1,14 +1,20 @@
 package com.github.reygnn.b2b.ui.whitelist
 
 import app.cash.turbine.test
+import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
+import com.github.reygnn.b2b.domain.repository.PoolRepository
+import com.github.reygnn.b2b.playback.OrchestratorStatus
+import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
+import com.github.reygnn.b2b.playback.PlayerStateHolder
 import com.github.reygnn.b2b.service.ServiceState
 import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,16 +32,23 @@ class WhitelistViewModelTest {
     @get:Rule val mainRule = MainDispatcherRule()
 
     private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
+    private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
+    private val poolSyncObserver: PoolSyncObserver = mockk()
     private val serviceState = ServiceState()
+    private val statusHolder = OrchestratorStatusHolder()
+    private val playerStateHolder = PlayerStateHolder()
 
-    @Before fun stubObserveWhitelist() {
+    @Before fun stubDefaults() {
         coEvery { artistRepo.observeWhitelist() } returns MutableStateFlow(emptyList())
+        every { poolRepo.observeTrackCount() } returns MutableStateFlow(0)
+        every { poolRepo.observeLatestSyncEpochMs() } returns MutableStateFlow(null)
+        every { poolSyncObserver.observeIsSyncing() } returns MutableStateFlow(false)
     }
 
     @Test fun `search debounces rapid input and calls API once with last query`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists(any()) } returns Outcome.Success(emptyList())
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.search("a")
             sut.search("ab")
@@ -53,7 +66,7 @@ class WhitelistViewModelTest {
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("abc") } returns
                 Outcome.Success(listOf(artistOf("1", "Found")))
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.search("abc")
             advanceTimeBy(301)
@@ -64,14 +77,13 @@ class WhitelistViewModelTest {
             advanceTimeBy(301)
             runCurrent()
             assertThat(sut.searchResults.value).isEmpty()
-            // No additional API call triggered by the blank.
             coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
         }
 
     @Test fun `search Error outcome surfaces as empty results`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("x") } returns Outcome.Error.RateLimited(retryAfterSeconds = 1)
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.search("x")
             advanceTimeBy(301)
@@ -82,7 +94,7 @@ class WhitelistViewModelTest {
         }
 
     @Test fun `add and remove delegate to repository`() = runTest(mainRule.testScheduler) {
-        val sut = WhitelistViewModel(artistRepo, serviceState)
+        val sut = newSut()
 
         sut.add(artistOf("a1", "Artist"))
         sut.remove("a2")
@@ -103,7 +115,7 @@ class WhitelistViewModelTest {
         runTest(mainRule.testScheduler) {
             val source = MutableStateFlow<List<Artist>>(listOf(artistOf("1", "A")))
             coEvery { artistRepo.observeWhitelist() } returns source
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.whitelisted.test {
                 assertThat(awaitItem()).containsExactly(artistOf("1", "A"))
@@ -115,7 +127,7 @@ class WhitelistViewModelTest {
 
     @Test fun `toggleService sends Start when service is not running`() =
         runTest(mainRule.testScheduler) {
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.serviceCommand.test {
                 sut.toggleService()
@@ -127,7 +139,7 @@ class WhitelistViewModelTest {
     @Test fun `toggleService sends Stop when service is running`() =
         runTest(mainRule.testScheduler) {
             serviceState.setRunning(true)
-            val sut = WhitelistViewModel(artistRepo, serviceState)
+            val sut = newSut()
 
             sut.serviceCommand.test {
                 sut.toggleService()
@@ -135,6 +147,64 @@ class WhitelistViewModelTest {
                 cancelAndConsumeRemainingEvents()
             }
         }
+
+    @Test fun `orchestrator status reflects the holder snapshot`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            sut.orchestratorStatus.test {
+                assertThat(awaitItem().status).isEqualTo(OrchestratorStatus.Idle)
+                statusHolder.record(OrchestratorStatus.FreeTier, atEpochMs = 5L)
+                val next = awaitItem()
+                assertThat(next.status).isEqualTo(OrchestratorStatus.FreeTier)
+                assertThat(next.atEpochMs).isEqualTo(5L)
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `pool count and last sync are observed from the repository`() =
+        runTest(mainRule.testScheduler) {
+            val count = MutableStateFlow(0)
+            val lastSync = MutableStateFlow<Long?>(null)
+            every { poolRepo.observeTrackCount() } returns count
+            every { poolRepo.observeLatestSyncEpochMs() } returns lastSync
+            val sut = newSut()
+
+            sut.poolTrackCount.test {
+                assertThat(awaitItem()).isEqualTo(0)
+                count.value = 1247
+                assertThat(awaitItem()).isEqualTo(1247)
+                cancelAndConsumeRemainingEvents()
+            }
+            sut.lastSyncEpochMs.test {
+                assertThat(awaitItem()).isNull()
+                lastSync.value = 999L
+                assertThat(awaitItem()).isEqualTo(999L)
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `isSyncing reflects the PoolSyncObserver`() =
+        runTest(mainRule.testScheduler) {
+            val syncing = MutableStateFlow(false)
+            every { poolSyncObserver.observeIsSyncing() } returns syncing
+            val sut = newSut()
+
+            sut.isSyncing.test {
+                assertThat(awaitItem()).isFalse()
+                syncing.value = true
+                assertThat(awaitItem()).isTrue()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    private fun newSut() = WhitelistViewModel(
+        artistRepo = artistRepo,
+        poolRepo = poolRepo,
+        poolSyncObserver = poolSyncObserver,
+        statusHolder = statusHolder,
+        playerStateHolder = playerStateHolder,
+        serviceState = serviceState,
+    )
 
     private fun artistOf(id: String, name: String) = Artist(id = id, name = name)
 }

@@ -10,7 +10,9 @@ import android.os.IBinder
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.di.DefaultDispatcher
 import com.github.reygnn.b2b.playback.OrchestratorStatus
+import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
 import com.github.reygnn.b2b.playback.PlaybackOrchestrator
+import com.github.reygnn.b2b.playback.PlayerStateHolder
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -25,17 +27,20 @@ import javax.inject.Inject
  * holds the state-machine logic; this class only:
  *  - manages the foreground notification + channel,
  *  - launches/cancels the orchestrator's collect-loop on START / DESTROY,
- *  - translates [OrchestratorStatus] events into notification text updates.
+ *  - translates [OrchestratorStatus] events into notification text updates,
+ *  - mirrors the latest status into [OrchestratorStatusHolder] for the UI.
  *
- * Spotify App Remote wiring lives behind [com.github.reygnn.b2b.playback.PlayerStateSource]
- * (currently bound to a no-op impl). When the SDK arrives, swap the binding;
- * this service does not change.
+ * Spotify App Remote access lives behind
+ * [com.github.reygnn.b2b.playback.PlayerStateSource], bound to
+ * [com.github.reygnn.b2b.playback.AppRemotePlayerStateSource].
  */
 @AndroidEntryPoint
 class PlaybackOrchestratorService : Service() {
 
     @Inject lateinit var orchestrator: PlaybackOrchestrator
     @Inject lateinit var serviceState: ServiceState
+    @Inject lateinit var statusHolder: OrchestratorStatusHolder
+    @Inject lateinit var playerStateHolder: PlayerStateHolder
     @Inject @DefaultDispatcher lateinit var dispatcher: CoroutineDispatcher
 
     private val supervisor = SupervisorJob()
@@ -50,6 +55,7 @@ class PlaybackOrchestratorService : Service() {
         serviceState.setRunning(true)
         scope.launch {
             orchestrator.status.collect { status ->
+                statusHolder.record(status)
                 updateNotification(notificationTextFor(status))
             }
         }
@@ -66,13 +72,17 @@ class PlaybackOrchestratorService : Service() {
     override fun onDestroy() {
         scope.cancel()
         serviceState.setRunning(false)
+        statusHolder.reset()
+        playerStateHolder.reset()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun notificationTextFor(status: OrchestratorStatus): String = when (status) {
-        OrchestratorStatus.Running -> getString(R.string.notif_running)
+        OrchestratorStatus.Idle -> getString(R.string.notif_running)
+        is OrchestratorStatus.Listening -> getString(R.string.notif_running)
+        is OrchestratorStatus.Enqueued -> getString(R.string.notif_running)
         OrchestratorStatus.FreeTier -> getString(R.string.notif_free_tier)
         OrchestratorStatus.NoActiveDevice -> getString(R.string.notif_idle_no_device)
         is OrchestratorStatus.SpotifyUnavailable ->

@@ -8,6 +8,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.data.auth.TokenStore
+import com.github.reygnn.b2b.work.PoolSyncWorkNames
 import com.github.reygnn.b2b.work.PoolSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -37,14 +38,10 @@ class SettingsViewModel @Inject constructor(
     fun manualSync() {
         val request = OneTimeWorkRequestBuilder<PoolSyncWorker>().build()
         WorkManager.getInstance(context).enqueueUniqueWork(
-            MANUAL_SYNC_WORK,
+            PoolSyncWorkNames.MANUAL,
             ExistingWorkPolicy.REPLACE,
             request,
         )
         _toastEvents.trySend(R.string.sync_enqueued)
-    }
-
-    private companion object {
-        const val MANUAL_SYNC_WORK = "manual_pool_sync"
     }
 }

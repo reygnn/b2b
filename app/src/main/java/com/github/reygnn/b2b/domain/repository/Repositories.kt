@@ -16,6 +16,8 @@ interface ArtistRepository {
 interface PoolRepository {
     suspend fun upsertTracks(tracks: List<Track>)
     suspend fun trackCount(): Int
+    fun observeTrackCount(): Flow<Int>
+    fun observeLatestSyncEpochMs(): Flow<Long?>
     suspend fun randomTrackExcluding(excludedUris: Set<String>): Track?
     suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>)
 }

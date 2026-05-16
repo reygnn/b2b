@@ -20,6 +20,32 @@
     <string name="service_stop">Stop session</string>
     <string name="service_running">Session running</string>
 
+    <!-- Status card -->
+    <string name="status_label">Status</string>
+    <string name="status_idle">Not started</string>
+    <string name="status_running">Waiting for Spotify…</string>
+    <string name="status_listening">Currently: %1$s — %2$s</string>
+    <string name="status_enqueued">Last enqueued: %1$s — %2$s</string>
+    <string name="status_no_device">No active Spotify device</string>
+    <string name="status_free_tier">Spotify Premium required</string>
+    <string name="status_spotify_unavailable">Spotify: %1$s</string>
+
+    <string name="track_position">Track: %1$s / %2$s · %3$s</string>
+    <string name="next_push_in">Next push in %1$s</string>
+    <string name="push_window">Push window</string>
+    <string name="track_paused">Paused</string>
+
+    <string name="pool_label">Pool</string>
+    <string name="pool_empty">Empty — add an artist to fill it</string>
+    <string name="pool_summary">%1$d tracks · last sync %2$s</string>
+    <string name="pool_summary_never">%1$d tracks · never synced</string>
+    <string name="pool_syncing">Syncing now…</string>
+
+    <string name="ago_seconds">%1$ds ago</string>
+    <string name="ago_minutes">%1$dmin ago</string>
+    <string name="ago_hours">%1$dh ago</string>
+    <string name="ago_days">%1$dd ago</string>
+
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_logout">Sign out</string>

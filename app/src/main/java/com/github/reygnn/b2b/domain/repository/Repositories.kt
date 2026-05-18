@@ -30,7 +30,17 @@ interface RecentlyPlayedRepository {
 }
 
 interface PlaybackRepository {
-    suspend fun activeDeviceId(): Outcome<String?>
+    /**
+     * Push a track URI into the user's Spotify queue. When [deviceId] is null,
+     * the request is routed to whatever device Spotify currently considers
+     * active; on no active device, the underlying endpoint returns 404 and
+     * the impl maps it to [Outcome.Error.NoActiveDevice].
+     *
+     * The orchestrator passes `deviceId = null` — see
+     * [com.github.reygnn.b2b.playback.PlaybackOrchestrator]. The parameter is
+     * kept so the interface still works for hypothetical callers that have
+     * already resolved a device id out of band; today there are none.
+     */
     suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit>
     suspend fun isPremium(): Outcome<Boolean>
 }

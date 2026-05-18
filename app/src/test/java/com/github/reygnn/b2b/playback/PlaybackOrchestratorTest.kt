@@ -638,13 +638,6 @@ class PlaybackOrchestratorTest {
 
         override suspend fun isPremium(): Outcome<Boolean> = premium
 
-        // Defensive: the orchestrator no longer calls activeDeviceId() after
-        // the race fix (the /me/player/devices probe was removed). If a
-        // refactor accidentally re-introduces the call, this trips the test
-        // loud-and-fast instead of silently returning Success(null).
-        override suspend fun activeDeviceId(): Outcome<String?> =
-            error("activeDeviceId() must not be called from the orchestrator")
-
         override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> {
             enqueueCalls += 1
             lastDeviceId = deviceId
@@ -821,9 +814,6 @@ class PlaybackOrchestratorTest {
             private set
 
         override suspend fun isPremium(): Outcome<Boolean> = Outcome.Success(true)
-
-        override suspend fun activeDeviceId(): Outcome<String?> =
-            error("activeDeviceId() must not be called from the orchestrator")
 
         override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> {
             enqueueCalls += 1

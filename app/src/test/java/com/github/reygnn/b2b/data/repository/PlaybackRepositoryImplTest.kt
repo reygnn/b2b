@@ -39,41 +39,6 @@ class PlaybackRepositoryImplTest {
 
     @After fun tearDown() { server.shutdown() }
 
-    @Test fun `activeDeviceId returns the id of the active device when present`() =
-        runTest(mainRule.testScheduler) {
-            server.enqueue(
-                MockResponse().setBody(
-                    """
-                    {"devices":[
-                        {"id":"d1","name":"Inactive Phone","is_active":false,"type":"Smartphone"},
-                        {"id":"d2","name":"Active Car","is_active":true,"type":"Automobile"}
-                    ]}
-                    """.trimIndent()
-                )
-            )
-
-            val result = sut.activeDeviceId()
-
-            assertThat(result).isEqualTo(Outcome.Success("d2"))
-        }
-
-    @Test fun `activeDeviceId returns null when no device is active`() =
-        runTest(mainRule.testScheduler) {
-            server.enqueue(
-                MockResponse().setBody(
-                    """
-                    {"devices":[
-                        {"id":"d1","name":"Idle","is_active":false,"type":"Smartphone"}
-                    ]}
-                    """.trimIndent()
-                )
-            )
-
-            val result = sut.activeDeviceId()
-
-            assertThat(result).isEqualTo(Outcome.Success<String?>(null))
-        }
-
     @Test fun `enqueue success on HTTP 204`() = runTest(mainRule.testScheduler) {
         server.enqueue(MockResponse().setResponseCode(204))
 

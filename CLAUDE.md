@@ -89,8 +89,8 @@ do not throw across layer boundaries.
 
 1. **Spotify Web API surface is closed.** `SpotifyApi.kt` is the single
    point of contact. The endpoints listed there (`/search`,
-   `/artists/{id}/albums`, `/albums/{id}/tracks`, `/me/player/devices`,
-   `/me/player/queue`, `/me`) are the entire allowed set. The endpoints in
+   `/artists/{id}/albums`, `/albums/{id}/tracks`, `/me/player/queue`,
+   `/me`) are the entire allowed set. The endpoints in
    ADR-0002 (`/recommendations`, `/artists/{id}/related-artists`,
    `/audio-features`, `/audio-analysis`, `/browse/featured-playlists`,
    `/browse/categories/{id}/playlists`) were deprecated for new app

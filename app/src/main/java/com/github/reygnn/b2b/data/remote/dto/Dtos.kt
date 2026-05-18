@@ -57,19 +57,6 @@ data class ArtistSearchResponseDto(
 )
 
 @Serializable
-data class DevicesResponseDto(
-    val devices: List<DeviceDto>,
-)
-
-@Serializable
-data class DeviceDto(
-    val id: String? = null,
-    val name: String,
-    @SerialName("is_active") val isActive: Boolean,
-    val type: String,
-)
-
-@Serializable
 data class UserProfileDto(
     val id: String,
     val product: String? = null, // "premium" | "free" | "open"

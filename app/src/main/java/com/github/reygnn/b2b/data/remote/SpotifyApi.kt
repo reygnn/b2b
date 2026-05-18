@@ -2,7 +2,6 @@ package com.github.reygnn.b2b.data.remote
 
 import com.github.reygnn.b2b.data.remote.dto.AlbumDto
 import com.github.reygnn.b2b.data.remote.dto.ArtistSearchResponseDto
-import com.github.reygnn.b2b.data.remote.dto.DevicesResponseDto
 import com.github.reygnn.b2b.data.remote.dto.PagedResponseDto
 import com.github.reygnn.b2b.data.remote.dto.TrackDto
 import com.github.reygnn.b2b.data.remote.dto.UserProfileDto
@@ -59,9 +58,12 @@ interface SpotifyApi {
         @Query("offset") offset: Int = 0,
     ): Response<PagedResponseDto<TrackDto>>
 
-    @GET("v1/me/player/devices")
-    suspend fun devices(): Response<DevicesResponseDto>
-
+    // POST /v1/me/player/queue: Spotify routes the request to the user's
+    // currently-active device when `device_id` is omitted (Retrofit drops
+    // null @Query params). A 404 means "no active device" and is mapped to
+    // Outcome.Error.NoActiveDevice in PlaybackRepositoryImpl.enqueue. The
+    // prior `/me/player/devices` probe was removed in the orchestrator-
+    // enqueue-race fix — server-side routing + 404 mapping subsume it.
     @POST("v1/me/player/queue")
     suspend fun enqueue(
         @Query("uri") uri: String,

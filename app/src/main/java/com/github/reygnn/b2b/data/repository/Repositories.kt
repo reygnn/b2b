@@ -264,14 +264,6 @@ class PlaybackRepositoryImpl @Inject constructor(
     @param:IoDispatcher private val io: CoroutineDispatcher,
 ) : PlaybackRepository {
 
-    override suspend fun activeDeviceId(): Outcome<String?> = withContext(io) {
-        try {
-            api.devices().toOutcome { it.devices.firstOrNull { d -> d.isActive }?.id }
-        } catch (e: IOException) {
-            Outcome.Error.Network
-        }
-    }
-
     override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> = withContext(io) {
         try {
             val response = api.enqueue(uri, deviceId)

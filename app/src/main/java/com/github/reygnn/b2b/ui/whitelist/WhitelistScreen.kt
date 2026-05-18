@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.ui.whitelist
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Arrangement.SpaceBetween
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,8 +35,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -142,6 +147,10 @@ private fun LogPanel(
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) listState.animateScrollToItem(0)
     }
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val copyContentDescription = stringResource(R.string.logs_copy_cd)
+    val copiedToast = stringResource(R.string.logs_copied_toast)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -152,8 +161,27 @@ private fun LogPanel(
                 text = stringResource(R.string.logs_title),
                 style = MaterialTheme.typography.labelLarge,
             )
-            TextButton(onClick = onClear) {
-                Text(stringResource(R.string.logs_clear))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        // Build oldest-first dump so the user can paste a
+                        // chronologically ordered transcript — even though
+                        // the list view itself is reverseLayout (newest on
+                        // top, easier to read live).
+                        val dump = entries.joinToString("\n") { entry ->
+                            "${LOG_TIME_FORMAT.format(Date(entry.epochMs))}  ${entry.message}"
+                        }
+                        clipboard.setText(AnnotatedString(dump))
+                        Toast.makeText(context, copiedToast, Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = entries.isNotEmpty(),
+                    modifier = Modifier.semantics { contentDescription = copyContentDescription },
+                ) {
+                    Text("📋", style = MaterialTheme.typography.titleMedium)
+                }
+                TextButton(onClick = onClear) {
+                    Text(stringResource(R.string.logs_clear))
+                }
             }
         }
         if (entries.isEmpty()) {

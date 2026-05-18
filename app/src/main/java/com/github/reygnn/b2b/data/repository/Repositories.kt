@@ -267,10 +267,10 @@ class PlaybackRepositoryImpl @Inject constructor(
 ) : PlaybackRepository {
 
     override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> = withContext(io) {
-        log.log("http: POST /me/player/queue uri=${uri.takeLast(8)} deviceId=$deviceId")
+        log.trace("http: POST /me/player/queue uri=${uri.takeLast(8)} deviceId=$deviceId")
         try {
             val response = api.enqueue(uri, deviceId)
-            log.log("http: enqueue → ${response.code()} (${if (response.isSuccessful) "ok" else response.message()})")
+            log.trace("http: enqueue → ${response.code()} (${if (response.isSuccessful) "ok" else response.message()})")
             when {
                 // 204 No Content has a null body() — the generic toOutcome
                 // would file that under Outcome.Error.Unknown("empty body").
@@ -282,7 +282,7 @@ class PlaybackRepositoryImpl @Inject constructor(
                 else -> response.toOutcome<Unit, Unit> { }
             }
         } catch (e: IOException) {
-            log.log("http: enqueue → IOException ${e.message ?: e::class.simpleName}")
+            log.trace("http: enqueue → IOException ${e.message ?: e::class.simpleName}")
             Outcome.Error.Network
         }
     }

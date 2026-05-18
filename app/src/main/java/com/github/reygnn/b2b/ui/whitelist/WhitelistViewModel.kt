@@ -63,6 +63,9 @@ class WhitelistViewModel @Inject constructor(
     )
 
     val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
+    val traceEnabled: StateFlow<Boolean> = logBuffer.traceEnabled
+
+    fun setTraceEnabled(on: Boolean) = logBuffer.setTraceEnabled(on)
 
     private val _serviceCommand = Channel<ServiceCommand>(
         capacity = 4,

@@ -188,8 +188,10 @@ class PlaybackOrchestrator @Inject constructor(
             .collect { state ->
                 if (sessionTerminated) return@collect
 
-                // [TRACE] Raw state-event dump for the debug branch.
-                log.log("state: ${state.trackUri.takeLast(8)} pos=${state.positionMs} dur=${state.durationMs} paused=${state.isPaused}")
+                // [TRACE] Raw state-event dump (only emitted when the
+                // user has flipped the debug-trace toggle in the log
+                // panel — silent in normal use).
+                log.trace("state: ${state.trackUri.takeLast(8)} pos=${state.positionMs} dur=${state.durationMs} paused=${state.isPaused}")
 
                 // Mirror the raw state for the UI's position/countdown line.
                 // The SDK only emits on state changes, so each event is a
@@ -221,24 +223,24 @@ class PlaybackOrchestrator @Inject constructor(
                 // leave the timer cancelled and don't re-arm.
                 val priorJob = triggerJob
                 if (priorJob != null && priorJob.isActive) {
-                    log.log("cancel: trigger for prior arming")
+                    log.trace("cancel: trigger for prior arming")
                 }
                 priorJob?.cancel()
                 if (state.isPaused) {
-                    log.log("arm: skipped (paused)")
+                    log.trace("arm: skipped (paused)")
                     return@collect
                 }
                 if (state.trackUri == lastEnqueuedForTrackId) {
-                    log.log("arm: skipped (latch holds ${state.trackUri.takeLast(8)})")
+                    log.trace("arm: skipped (latch holds ${state.trackUri.takeLast(8)})")
                     return@collect
                 }
 
                 val delayMs = state.durationMs - state.positionMs - TRIGGER_MS
                 val latched = state.trackUri
-                log.log("arm: delay=${delayMs}ms for ${latched.takeLast(8)}")
+                log.trace("arm: delay=${delayMs}ms for ${latched.takeLast(8)}")
                 triggerJob = launch {
                     if (delayMs > 0) delay(delayMs)
-                    log.log("fire: trigger for ${latched.takeLast(8)}")
+                    log.trace("fire: trigger for ${latched.takeLast(8)}")
                     // Optimistic latch: claim the slot for THIS track URI
                     // before any HTTP work. If a concurrent state event for
                     // the same URI lands while the enqueue is in-flight, the

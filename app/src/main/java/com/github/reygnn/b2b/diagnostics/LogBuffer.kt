@@ -28,6 +28,13 @@ class LogBuffer @Inject constructor() : LogSink {
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
+    // In-memory only — not persisted across process restarts. The toggle
+    // is opt-in by design: leaving it on after a debug session is a
+    // mistake we don't have to recover from.
+    private val _traceEnabled = MutableStateFlow(false)
+    val traceEnabled: StateFlow<Boolean> = _traceEnabled.asStateFlow()
+    fun setTraceEnabled(on: Boolean) { _traceEnabled.value = on }
+
     override fun log(message: String) {
         val snapshot = synchronized(lock) {
             val entry = LogEntry(
@@ -40,6 +47,10 @@ class LogBuffer @Inject constructor() : LogSink {
             buffer.toList()
         }
         _entries.value = snapshot
+    }
+
+    override fun trace(message: String) {
+        if (_traceEnabled.value) log(message)
     }
 
     fun clear() {

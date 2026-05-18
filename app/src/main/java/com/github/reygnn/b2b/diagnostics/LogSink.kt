@@ -7,6 +7,14 @@ package com.github.reygnn.b2b.diagnostics
  */
 interface LogSink {
     fun log(message: String)
+
+    /**
+     * High-frequency diagnostic log. Behaves like [log] when the buffer's
+     * trace toggle is on, otherwise drops the message. Call sites are
+     * things like state-event dumps, trigger-arm/cancel/fire, HTTP
+     * response codes — useful for chasing races, noisy in normal use.
+     */
+    fun trace(message: String)
 }
 
 data class LogEntry(

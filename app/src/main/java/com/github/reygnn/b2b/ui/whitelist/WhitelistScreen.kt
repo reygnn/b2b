@@ -17,6 +17,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -71,6 +72,7 @@ fun WhitelistScreen(
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
+    val traceEnabled by vm.traceEnabled.collectAsState()
 
     LaunchedEffect(Unit) {
         vm.serviceCommand.collect { cmd ->
@@ -130,6 +132,8 @@ fun WhitelistScreen(
             LogPanel(
                 entries = logEntries,
                 onClear = { vm.clearLog() },
+                traceEnabled = traceEnabled,
+                onSetTraceEnabled = { vm.setTraceEnabled(it) },
                 modifier = Modifier.fillMaxWidth().weight(1f),
             )
         }
@@ -140,6 +144,8 @@ fun WhitelistScreen(
 private fun LogPanel(
     entries: List<LogEntry>,
     onClear: () -> Unit,
+    traceEnabled: Boolean,
+    onSetTraceEnabled: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -150,6 +156,7 @@ private fun LogPanel(
     val context = LocalContext.current
     val copyContentDescription = stringResource(R.string.logs_copy_cd)
     val clearContentDescription = stringResource(R.string.logs_clear_cd)
+    val traceContentDescription = stringResource(R.string.logs_trace_cd)
     val copiedToast = stringResource(R.string.logs_copied_toast)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -162,6 +169,18 @@ private fun LogPanel(
                 style = MaterialTheme.typography.labelLarge,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Trace toggle. When on, the orchestrator and repository
+                // emit high-frequency diagnostic lines (state/arm/cancel/
+                // fire/http). Off by default; opt-in is the point of the
+                // 🐛 icon — chronic state-dump traffic crowds the buffer
+                // and isn't useful for normal sessions.
+                IconToggleButton(
+                    checked = traceEnabled,
+                    onCheckedChange = onSetTraceEnabled,
+                    modifier = Modifier.semantics { contentDescription = traceContentDescription },
+                ) {
+                    Text("🐛", style = MaterialTheme.typography.titleMedium)
+                }
                 IconButton(
                     onClick = {
                         // Build oldest-first dump so the user can paste a

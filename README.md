@@ -8,18 +8,18 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**Real-Device-validiert, Version 0.21.** End-to-End-Push beobachtet:
+**Real-Device-validiert, Version 0.24.** End-to-End-Push beobachtet:
 Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b den
 nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
 (Exchange + Refresh) gegen `accounts.spotify.com`, Periodic + One-Shot
 + Manual `PoolSyncWorker` mit Pagination-Safeguards und 10-min-Timeout,
-Compose-UI (Login → Whitelist → Settings → Logs) mit Status-Karte,
-Track-Position-Countdown, Skip-Button für den Vorschau-Pick, in-App-
-Log-Viewer (500 Zeilen). App-Remote-SDK-Integration via
-`AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-
-Dynamic-Color folgt System-Dark-Mode. Suite: ~84 Unit-Tests
-(JUnit + MockK + Turbine + MockWebServer + Robolectric). Build clean,
-keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
+Compose-UI (Login → Whitelist → Artists → Settings) mit Status-Karte,
+Track-Position-Countdown, Skip-Button für den Vorschau-Pick und
+500-Zeilen-Log-Panel direkt auf dem Home-Screen. App-Remote-SDK-
+Integration via `AppRemotePlayerStateSource` (Main-Looper-pinned).
+Material-You-Dynamic-Color folgt System-Dark-Mode. Suite: ~84 Unit-
+Tests (JUnit + MockK + Turbine + MockWebServer + Robolectric). Build
+clean, keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
 
 ## Setup
 
@@ -75,10 +75,12 @@ keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
    Tokens sind verschlüsselt in `EncryptedSharedPreferences`.
 3. Nav-Graph schaltet automatisch auf `WhitelistScreen` (gating über
    `TokenStore.authState()`).
-4. Artists suchen (mit 300 ms Debounce) und zur Whitelist hinzufügen.
-   Jede Add-Operation triggert einen One-Shot `PoolSyncWorker`
-   (`KEEP`-Policy → mehrere schnelle Adds coalescen zu einem Lauf).
-   Remove löscht die zugehörigen Tracks sofort lokal aus dem Pool.
+4. **„Manage artists"** öffnet den dedizierten Artists-Screen: Suche
+   (mit 300 ms Debounce) liefert Treffer als Checkbox-Liste, Häkchen-
+   Toggle fügt zur Whitelist hinzu bzw. entfernt. Jede Add-Operation
+   triggert einen One-Shot `PoolSyncWorker` (`KEEP`-Policy → mehrere
+   schnelle Adds coalescen zu einem Lauf). Remove löscht die
+   zugehörigen Tracks sofort lokal aus dem Pool.
 5. "Start session" → `PlaybackOrchestratorService` startet als
    Foreground, verbindet sich via App Remote mit der lokalen Spotify-
    Instanz, beobachtet `PlayerState`. Position-basierter Timer:
@@ -96,12 +98,15 @@ keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
      Trigger.
    - `Pool: N tracks · last sync 3h ago` bzw. `Syncing now…` während
      ein `PoolSyncWorker` läuft.
-7. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane),
+7. **Log-Panel** unterhalb der Status-Karte: 500-Zeilen-Ring-Buffer
+   (`LogBuffer`) mit `HH:mm:ss  message` pro Eintrag, reverseLayout
+   (neuestes oben). Reicht für „was ist gerade gelaufen?"-Diagnose
+   ohne adb-logcat. Buffer wird beim Prozess-Tod gewiped — er ist
+   bewusst kein Persistenz-Mechanismus.
+8. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane),
    "Cancel running sync" (Notausgang falls ein Worker hängt — ruft
-   `WorkManager.cancelUniqueWork` auf alle drei Lanes), "View logs"
-   (500-Zeilen-Ring-Buffer mit `[HH:mm:ss] message` pro Eintrag,
-   markierbar/kopierbar), "Sign out" (`TokenStore.clear()` → Nav-Graph
-   routet zurück zu Login).
+   `WorkManager.cancelUniqueWork` auf alle drei Lanes), "Sign out"
+   (`TokenStore.clear()` → Nav-Graph routet zurück zu Login).
 
 ## Architektur
 
@@ -218,13 +223,14 @@ app/src/main/java/com/github/reygnn/b2b/
 └── ui/
     ├── AppViewModel.kt      Top-level (Auth-State)
     ├── theme/B2BTheme.kt    Material You dynamic color, system dark/light
-    ├── nav/AppNavHost.kt    Login ↔ Whitelist ↔ Settings ↔ Logs
+    ├── nav/AppNavHost.kt    Login ↔ Whitelist ↔ Artists ↔ Settings
     ├── login/               LoginScreen + ViewModel
     ├── whitelist/           WhitelistScreen + ViewModel (Status-Karte,
-    │                        Search-Debounce, Service-Toggle, Skip-Pick)
-    ├── settings/            SettingsScreen + ViewModel (Manual-Sync,
-    │                        Cancel-Sync, View-Logs, Logout)
-    └── logs/                LogScreen + ViewModel (selektierbarer Text)
+    │                        Service-Toggle, Skip-Pick, Log-Panel)
+    ├── artists/             ArtistsScreen + ViewModel (Search-Debounce,
+    │                        Checkbox-Toggle-Liste für die Whitelist)
+    └── settings/            SettingsScreen + ViewModel (Manual-Sync,
+                             Cancel-Sync, Logout)
 ```
 
 ## Out of Scope

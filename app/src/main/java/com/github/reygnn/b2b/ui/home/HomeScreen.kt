@@ -88,7 +88,7 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("${stringResource(R.string.home_title)}  ·  ${BuildConfig.VERSION_NAME}") },
+                title = { Text("${stringResource(R.string.home_title)} ${BuildConfig.VERSION_NAME}") },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Text("⚙")

@@ -809,6 +809,89 @@ class PlaybackOrchestratorTest {
             job.cancel()
         }
 
+    // Fake that resolves the first enqueue through gate1 and every later
+    // call through gate2. Lets us drive two concurrent triggers
+    // independently so RetryLater on the older one can race against the
+    // latch claim of the younger one.
+    private class TwoGatePlaybackRepository(
+        private val gate1: CompletableDeferred<Outcome<Unit>>,
+        private val gate2: CompletableDeferred<Outcome<Unit>>,
+    ) : PlaybackRepository {
+        @Volatile var enqueueCalls = 0
+            private set
+
+        override suspend fun isPremium(): Outcome<Boolean> = Outcome.Success(true)
+
+        override suspend fun activeDeviceId(): Outcome<String?> =
+            error("activeDeviceId() must not be called from the orchestrator")
+
+        override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> {
+            enqueueCalls += 1
+            return if (enqueueCalls == 1) gate1.await() else gate2.await()
+        }
+    }
+
+    @Test fun `RetryLater on a stale trigger does not release a fresher trigger's latch claim`() =
+        runTest(mainRule.testScheduler) {
+            // Pins the reference-equality guard on the RetryLater branch.
+            // Without it, the older trigger's RetryLater would set
+            // lastEnqueuedForTrackId = null even though the field already
+            // holds the URI claimed by a younger trigger, and the next
+            // same-URI state event for the younger track would arm a
+            // duplicate enqueue.
+            val gate1 = CompletableDeferred<Outcome<Unit>>()
+            val gate2 = CompletableDeferred<Outcome<Unit>>()
+            val rep = TwoGatePlaybackRepository(gate1, gate2)
+            val raceSut = PlaybackOrchestrator(
+                source, pickNext, rep, recents,
+                playerStateHolder, previewHolder,
+                log = mockk<LogSink>(relaxed = true),
+            )
+
+            val job = launch { raceSut.run(50) }
+            runCurrent()
+
+            // 1) Track:1 → trigger fires (delay=0, nearEnd) → claims latch
+            //    = track:1 → enqueue suspends on gate1.
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+            assertThat(rep.enqueueCalls).isEqualTo(1)
+
+            // 2) Track:2 arrives also in the trigger window (user-seek to
+            //    near-end of the new track). The collect loop overwrites
+            //    triggerJob — the prior job continues inside NonCancellable
+            //    — and the new triggerJob claims latch = track:2 and
+            //    suspends on gate2. Both lambdas are alive concurrently.
+            playerStates.emit(nearEnd("spotify:track:2"))
+            runCurrent()
+            assertThat(rep.enqueueCalls).isEqualTo(2)
+
+            // 3) gate1 resolves with a transient error. Track:1's lambda
+            //    enters the RetryLater branch. The field currently holds
+            //    "track:2" (from step 2). With the guard, latched =
+            //    "track:1" does not match, so the field is left alone.
+            //    Without the guard, the field would be unconditionally
+            //    cleared to null.
+            gate1.complete(Outcome.Error.Network)
+            runCurrent()
+
+            // 4) Another same-URI state event for track:2 arrives. The
+            //    collect-side short-circuit `state.trackUri ==
+            //    lastEnqueuedForTrackId` must hold — meaning no new
+            //    triggerJob is armed, no second enqueue call is issued.
+            //    Without the guard, this assertion would fail with
+            //    enqueueCalls == 3.
+            playerStates.emit(nearEnd("spotify:track:2"))
+            runCurrent()
+            assertThat(rep.enqueueCalls).isEqualTo(2)
+
+            // Drain the in-flight track:2 call so the test scope exits
+            // cleanly.
+            gate2.complete(Outcome.Success(Unit))
+            runCurrent()
+            job.cancel()
+        }
+
     private fun nearEnd(uri: String, remainingMs: Long = 8_000) = PlayerState(
         trackUri = uri,
         trackName = "Track",

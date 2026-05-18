@@ -262,7 +262,29 @@ class PlaybackOrchestrator @Inject constructor(
                         // re-arms a fresh attempt — applies to transient
                         // failures (network, rate limit, no active device,
                         // unknown 5xx) where retrying might succeed.
-                        EnqueueOutcome.RetryLater -> lastEnqueuedForTrackId = null
+                        //
+                        // Reference-equality guard against `latched`: a
+                        // stale trigger must not wipe the latch claimed by
+                        // a fresher one. Sequence to guard against —
+                        //   1. track:1 trigger fires, claims latch=track:1,
+                        //      HTTP suspends.
+                        //   2. Track:2 state event arrives also in the
+                        //      trigger window (user-seek). New trigger
+                        //      fires, claims latch=track:2, HTTP suspends.
+                        //      Both lambdas are alive concurrently;
+                        //      NonCancellable on the inner HTTP keeps
+                        //      track:1's call from being aborted.
+                        //   3. track:1's HTTP returns RetryLater (network).
+                        //      An unconditional `= null` would clear the
+                        //      field — which now holds "track:2". A
+                        //      subsequent state event for track:2 would
+                        //      then bypass the short-circuit and arm a
+                        //      second enqueue for the URI that is already
+                        //      mid-flight. The guard collapses the clear
+                        //      to a no-op when the field has been re-
+                        //      claimed by a later trigger.
+                        EnqueueOutcome.RetryLater ->
+                            if (lastEnqueuedForTrackId == latched) lastEnqueuedForTrackId = null
                         // Session-terminal: stop processing further state
                         // events for this run. enqueueOnce already cleared
                         // pendingPick + previewHolder; we just flip the flag.

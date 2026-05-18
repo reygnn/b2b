@@ -119,12 +119,15 @@ do not throw across layer boundaries.
    not in any repository or in the foreground service shell.
 
    Three latch-related invariants are also non-negotiable:
-   - **Optimistic claim.** Latch is set BEFORE the enqueue HTTP call, not
-     after success. Otherwise a concurrent state event during the HTTP
-     round-trip sees an empty latch, cancels the in-flight trigger, and
-     re-arms — and if the cancel lands between `delay()` and the HTTP
-     call, the enqueue is lost. Spotify then plays its context's
-     next-track (the "drift" symptom).
+   - **Optimistic claim, guarded release.** Latch is set BEFORE the enqueue
+     HTTP call, not after success. Otherwise a concurrent state event
+     during the HTTP round-trip sees an empty latch, cancels the in-flight
+     trigger, and re-arms — and if the cancel lands between `delay()` and
+     the HTTP call, the enqueue is lost. Spotify then plays its context's
+     next-track (the "drift" symptom). Release on RetryLater is gated by a
+     reference-equality check against the trigger's captured `latched`
+     URI: a stale trigger must not wipe a fresher trigger's claim (would
+     allow a duplicate enqueue for the same URI).
    - **NonCancellable around the HTTP.** The enqueue runs inside
      `withContext(NonCancellable) { … }`. A `triggerJob.cancel()` from
      the next state event must not abort the call mid-flight.

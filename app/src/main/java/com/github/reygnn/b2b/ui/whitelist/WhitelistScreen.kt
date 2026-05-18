@@ -43,6 +43,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import com.github.reygnn.b2b.BuildConfig
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.diagnostics.LogEntry
 import com.github.reygnn.b2b.domain.model.Track
@@ -87,7 +88,7 @@ fun WhitelistScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.whitelist_title)) },
+                title = { Text("${stringResource(R.string.whitelist_title)}  ·  ${BuildConfig.VERSION_NAME}") },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Text("⚙")

@@ -4,6 +4,7 @@ import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
+import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -34,7 +35,7 @@ class PlaybackRepositoryImplTest {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(SpotifyApi::class.java)
-        sut = PlaybackRepositoryImpl(api, mainRule.testDispatcher)
+        sut = PlaybackRepositoryImpl(api, log = mockk(relaxed = true), mainRule.testDispatcher)
     }
 
     @After fun tearDown() { server.shutdown() }

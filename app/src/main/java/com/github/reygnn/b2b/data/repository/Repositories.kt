@@ -8,6 +8,7 @@ import com.github.reygnn.b2b.data.local.entity.RecentlyPlayedEntity
 import com.github.reygnn.b2b.data.local.entity.WhitelistedArtistEntity
 import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.di.IoDispatcher
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -261,12 +262,15 @@ class RecentlyPlayedRepositoryImpl @Inject constructor(
 @Singleton
 class PlaybackRepositoryImpl @Inject constructor(
     private val api: SpotifyApi,
+    private val log: LogSink,
     @param:IoDispatcher private val io: CoroutineDispatcher,
 ) : PlaybackRepository {
 
     override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> = withContext(io) {
+        log.log("http: POST /me/player/queue uri=${uri.takeLast(8)} deviceId=$deviceId")
         try {
             val response = api.enqueue(uri, deviceId)
+            log.log("http: enqueue → ${response.code()} (${if (response.isSuccessful) "ok" else response.message()})")
             when {
                 // 204 No Content has a null body() — the generic toOutcome
                 // would file that under Outcome.Error.Unknown("empty body").
@@ -278,6 +282,7 @@ class PlaybackRepositoryImpl @Inject constructor(
                 else -> response.toOutcome<Unit, Unit> { }
             }
         } catch (e: IOException) {
+            log.log("http: enqueue → IOException ${e.message ?: e::class.simpleName}")
             Outcome.Error.Network
         }
     }

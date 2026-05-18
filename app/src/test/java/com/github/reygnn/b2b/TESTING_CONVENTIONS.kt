@@ -87,9 +87,22 @@ package com.github.reygnn.b2b
  *   keeps the rest strict.
  * - For `suspend` functions: `coEvery { ... } returns ...` and
  *   `coVerify { ... }`.
- * - **Stateful stubbing**: use `coEvery { foo() } answers { … }` (note the
- *   block form). There is no `coAnswers` keyword. The `answers` block runs
- *   on each call and has access to `args`, `nArgs`, `invocation`.
+ * - **Stateful stubbing**: two block forms, picked by whether the answer body
+ *   needs to suspend.
+ *   - `coEvery { foo() } answers { … }` — non-suspending block. Use this
+ *     when the body only reads state, increments counters, or returns a
+ *     stored value. The block has access to `args`, `nArgs`, `invocation`.
+ *   - `coEvery { foo() } coAnswers { … }` — suspending block. Use this
+ *     when the body itself needs to call other suspend functions
+ *     (e.g. `delay`, `mutex.withLock`, `channel.receive`). The block has
+ *     the same `args`/`nArgs`/`invocation` access plus full suspend
+ *     semantics.
+ *   For race-test gates where the stub needs to suspend on a
+ *   `CompletableDeferred`, a small hand-rolled fake implementing the
+ *   interface directly is often clearer than `coAnswers { gate.await() }`
+ *   — see `GatedPlaybackRepository` in `PlaybackOrchestratorTest` for a
+ *   worked example. Both approaches are acceptable; pick whichever reads
+ *   most naturally for the test at hand.
  * - For final Kotlin classes in production code: rely on `mockk-agent`
  *   (already on the test classpath). Don't open production classes for tests.
  *

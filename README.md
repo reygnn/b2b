@@ -252,8 +252,6 @@ app/src/main/java/com/github/reygnn/b2b/
 - AppRemote-Reconnect-Retry bei verlorener Verbindung — der
   Orchestrator emittiert `SpotifyUnavailable` und der `run`-Loop endet;
   Service bleibt foreground aber tut nichts mehr bis User stop+start.
-- Premium-Status-Caching (aktuell `/me`-Call pro Enqueue, jedes Mal
-  ein HTTP-Round-Trip).
 - Release-Signing-Konfiguration + ProGuard-Regeln für die Spotify-SDK.
 - Room-Migration-Setup (`exportSchema = true` + `room.schemaLocation`).
 - Bias-Pick: aktuell uniform random aus dem ganzen Pool. „Stay with the

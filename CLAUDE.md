@@ -118,6 +118,23 @@ do not throw across layer boundaries.
    minute. Keep that latch in the orchestrator (pure logic, JVM-testable),
    not in any repository or in the foreground service shell.
 
+   Three latch-related invariants are also non-negotiable:
+   - **Optimistic claim.** Latch is set BEFORE the enqueue HTTP call, not
+     after success. Otherwise a concurrent state event during the HTTP
+     round-trip sees an empty latch, cancels the in-flight trigger, and
+     re-arms — and if the cancel lands between `delay()` and the HTTP
+     call, the enqueue is lost. Spotify then plays its context's
+     next-track (the "drift" symptom).
+   - **NonCancellable around the HTTP.** The enqueue runs inside
+     `withContext(NonCancellable) { … }`. A `triggerJob.cancel()` from
+     the next state event must not abort the call mid-flight.
+   - **`@Volatile` on cross-coroutine state.** `lastEnqueuedForTrackId`
+     and `sessionTerminated` are class-level `@Volatile` fields, not
+     `var`s local to `run()`. The production dispatcher is multi-
+     threaded (`@DefaultDispatcher = Dispatchers.Default`); a captured
+     local var would be a JMM-level data race between the trigger child
+     writing the field and the collect parent reading it.
+
    The orchestrator consumes a `PlayerStateSource` (interface,
    `playback/PlayerStateSource.kt`); the production binding is
    `AppRemotePlayerStateSource`, which wraps the Spotify App Remote SDK

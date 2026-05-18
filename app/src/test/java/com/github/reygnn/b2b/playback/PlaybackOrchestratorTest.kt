@@ -12,6 +12,7 @@ import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -49,8 +50,13 @@ class PlaybackOrchestratorTest {
     )
 
     @Before fun stubHappyPath() {
+        // Session-start premium check is the only isPremium() call — it was
+        // hoisted out of enqueueOnce in the race fix and stays once-per-run.
+        // Per-enqueue HTTP is now a single round-trip: enqueue() with
+        // deviceId = null, mapping 404 → NoActiveDevice in the repository.
+        // (The prior /me/player/devices probe was removed entirely; the
+        // PlaybackRepository interface no longer carries activeDeviceId.)
         coEvery { playback.isPremium() } returns Outcome.Success(true)
-        coEvery { playback.activeDeviceId() } returns Outcome.Success("device-1")
         coEvery { pickNext(50) } returns Outcome.Success(trackOf("spotify:track:next"))
         coEvery { playback.enqueue(any(), any()) } returns Outcome.Success(Unit)
     }
@@ -63,7 +69,10 @@ class PlaybackOrchestratorTest {
             playerStates.emit(nearEnd("spotify:track:1"))
             runCurrent()
 
-            coVerify(exactly = 1) { playback.enqueue("spotify:track:next", "device-1") }
+            // deviceId is now passed as null — Spotify routes to its active
+            // device server-side, and a 404 (no active device) is mapped to
+            // Outcome.Error.NoActiveDevice in PlaybackRepositoryImpl.
+            coVerify(exactly = 1) { playback.enqueue("spotify:track:next", null) }
             coVerify(exactly = 1) { recents.record("spotify:track:next") }
             coVerify(exactly = 1) { recents.trim(100) }
             job.cancel()
@@ -180,11 +189,11 @@ class PlaybackOrchestratorTest {
             runCurrent()
 
             // runCurrent between emits so the first trigger's enqueueOnce
-            // chain (isPremium → activeDeviceId → enqueue → latch) finishes
-            // before the second emit's collect cancels the still-armed job.
-            // In production the same race exists if two PlayerState events
-            // arrive within a millisecond — the second re-arms with current
-            // info and fires anew, so eventual correctness is preserved.
+            // (a single HTTP call now — the prior isPremium/activeDeviceId
+            // probes have been hoisted out / removed) finishes before the
+            // second emit's collect runs. Latch is claimed BEFORE the call
+            // and released only on failure; on success it stays bound to
+            // track:1, so the second emit (URI track:2) re-arms cleanly.
             playerStates.emit(nearEnd("spotify:track:1"))
             runCurrent()
             playerStates.emit(nearEnd("spotify:track:2"))
@@ -227,7 +236,7 @@ class PlaybackOrchestratorTest {
             job.cancel()
         }
 
-    @Test fun `emits FreeTier status and skips enqueue when account is not premium`() =
+    @Test fun `emits FreeTier at session start and aborts when account is not premium`() =
         runTest(mainRule.testScheduler) {
             coEvery { playback.isPremium() } returns Outcome.Success(false)
 
@@ -235,21 +244,30 @@ class PlaybackOrchestratorTest {
                 val job = launch { sut.run(50) }
                 runCurrent()
 
+                // Premium check is now hoisted to session start: FreeTier is
+                // emitted before any state collection begins, then run()
+                // returns. No Listening events are produced because the
+                // collect loop never starts.
+                assertThat(awaitItem()).isEqualTo(OrchestratorStatus.FreeTier)
+
+                // Subsequent state events are dropped on the floor — the
+                // SharedFlow has no active subscriber once run() returned.
                 playerStates.emit(nearEnd("spotify:track:1"))
                 runCurrent()
 
-                // Listening first, then FreeTier from the enqueue path.
-                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
-                assertThat(awaitItem()).isEqualTo(OrchestratorStatus.FreeTier)
                 coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                expectNoEvents()
                 job.cancel()
                 cancelAndConsumeRemainingEvents()
             }
         }
 
-    @Test fun `emits NoActiveDevice when devices lookup returns null`() =
+    @Test fun `emits NoActiveDevice when enqueue reports no active device`() =
         runTest(mainRule.testScheduler) {
-            coEvery { playback.activeDeviceId() } returns Outcome.Success(null)
+            // 404 from /me/player/queue is mapped to NoActiveDevice in the
+            // repository. The orchestrator no longer probes /me/player/devices
+            // first — it relies entirely on this terminal mapping.
+            coEvery { playback.enqueue(any(), any()) } returns Outcome.Error.NoActiveDevice
 
             sut.status.test {
                 val job = launch { sut.run(50) }
@@ -260,13 +278,14 @@ class PlaybackOrchestratorTest {
 
                 assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
                 assertThat(awaitItem()).isEqualTo(OrchestratorStatus.NoActiveDevice)
-                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                // The single HTTP call WAS attempted, just terminated by 404.
+                coVerify(exactly = 1) { playback.enqueue(any(), any()) }
                 job.cancel()
                 cancelAndConsumeRemainingEvents()
             }
         }
 
-    @Test fun `emits SpotifyUnavailable when premium check errors`() =
+    @Test fun `soft-fails on premium check error at session start and continues`() =
         runTest(mainRule.testScheduler) {
             coEvery { playback.isPremium() } returns Outcome.Error.Network
 
@@ -274,23 +293,79 @@ class PlaybackOrchestratorTest {
                 val job = launch { sut.run(50) }
                 runCurrent()
 
-                playerStates.emit(nearEnd("spotify:track:1"))
-                runCurrent()
-
-                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                // Soft-fail: the error is surfaced as SpotifyUnavailable but
+                // the orchestrator proceeds into the collect loop anyway.
+                // Rationale: a flaky /me probe shouldn't kill an entire
+                // session — if the account is actually non-premium, the
+                // first real enqueue will return 403 and we'll emit FreeTier
+                // through the regular error path in enqueueOnce.
                 val errorStatus = awaitItem()
                 assertThat(errorStatus).isInstanceOf(OrchestratorStatus.SpotifyUnavailable::class.java)
                 assertThat((errorStatus as OrchestratorStatus.SpotifyUnavailable).reason)
                     .contains("premium check")
-                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+
+                playerStates.emit(nearEnd("spotify:track:1"))
+                runCurrent()
+
+                // Session continued: Listening + Enqueued both fire.
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Enqueued::class.java)
+                coVerify(exactly = 1) { playback.enqueue(any(), any()) }
                 job.cancel()
                 cancelAndConsumeRemainingEvents()
             }
         }
 
-    @Test fun `emits SpotifyUnavailable when devices lookup errors`() =
+    @Test fun `mid-session 403 is terminal silences further events and clears preview`() =
         runTest(mainRule.testScheduler) {
-            coEvery { playback.activeDeviceId() } returns
+            // Account product flipped mid-session, or session-start premium
+            // check soft-failed and the account is in fact free. The terminal
+            // signal is a 403 from /me/player/queue. Premium is a hard
+            // session-level prerequisite — once we see it fail mid-flight,
+            // every subsequent enqueue would also 403, so we go dormant for
+            // the rest of this run. Symmetric to the session-start FreeTier
+            // branch which exits run() directly.
+            coEvery { playback.enqueue(any(), any()) } returns Outcome.Error.NotPremium
+
+            sut.status.test {
+                val job = launch { sut.run(50) }
+                runCurrent()
+
+                // Track 1 enters the trigger window → Listening fires (and
+                // sets a pre-pick on the preview holder via prePickNext) →
+                // trigger fires → enqueue returns 403 → FreeTier + terminal.
+                playerStates.emit(nearEnd("spotify:track:1"))
+                runCurrent()
+
+                assertThat(awaitItem()).isInstanceOf(OrchestratorStatus.Listening::class.java)
+                assertThat(awaitItem()).isEqualTo(OrchestratorStatus.FreeTier)
+                coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+                // The preview was cleared as part of the terminal handling —
+                // the UI must not keep advertising a "Next:" pick for a
+                // session that will never enqueue another track.
+                assertThat(previewHolder.track.value).isNull()
+
+                // A subsequent state event (different URI, in the trigger
+                // window) must NOT cause another doomed 403 attempt, must
+                // NOT emit Listening, must NOT pre-pick. The collect lambda
+                // is short-circuited at entry by the sessionTerminated flag.
+                playerStates.emit(nearEnd("spotify:track:2"))
+                runCurrent()
+
+                coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+                expectNoEvents()
+                // Preview still clear — the second event didn't sneak a
+                // prePickNext through.
+                assertThat(previewHolder.track.value).isNull()
+
+                job.cancel()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `emits SpotifyUnavailable when enqueue errors with an unknown failure`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { playback.enqueue(any(), any()) } returns
                 Outcome.Error.Unknown("HTTP 500: boom")
 
             sut.status.test {
@@ -304,9 +379,9 @@ class PlaybackOrchestratorTest {
                 val errorStatus = awaitItem()
                 assertThat(errorStatus).isInstanceOf(OrchestratorStatus.SpotifyUnavailable::class.java)
                 val reason = (errorStatus as OrchestratorStatus.SpotifyUnavailable).reason
-                assertThat(reason).contains("devices lookup")
+                assertThat(reason).contains("enqueue")
                 assertThat(reason).contains("HTTP 500: boom")
-                coVerify(exactly = 0) { playback.enqueue(any(), any()) }
+                coVerify(exactly = 1) { playback.enqueue(any(), any()) }
                 job.cancel()
                 cancelAndConsumeRemainingEvents()
             }
@@ -506,13 +581,15 @@ class PlaybackOrchestratorTest {
             job.cancel()
         }
 
-    @Test fun `transient failure leaves latch open so next emission retries`() =
+    @Test fun `enqueue failure releases latch so next emission for same URI retries`() =
         runTest(mainRule.testScheduler) {
-            // First isPremium call: transient network failure → skip, no latch.
-            // Second call: success → fire.
-            coEvery { playback.isPremium() } returnsMany listOf(
+            // First attempt: transient network error. Latch is claimed
+            // optimistically inside the launched trigger job, then released
+            // when enqueueOnce returns false. A subsequent same-URI emission
+            // therefore re-arms and tries again. Second attempt: success.
+            coEvery { playback.enqueue(any(), any()) } returnsMany listOf(
                 Outcome.Error.Network,
-                Outcome.Success(true),
+                Outcome.Success(Unit),
             )
 
             val job = launch { sut.run(50) }
@@ -523,7 +600,212 @@ class PlaybackOrchestratorTest {
             playerStates.emit(nearEnd("spotify:track:1"))
             runCurrent()
 
-            coVerify(exactly = 1) { playback.enqueue(any(), any()) }
+            coVerify(exactly = 2) { playback.enqueue(any(), any()) }
+            // Recents only recorded on the successful call.
+            coVerify(exactly = 1) { recents.record(any()) }
+            job.cancel()
+        }
+
+    // ── Race-specific tests for the cancellation guard ──────────────────
+    //
+    // These two tests pin the behavioural change at the heart of the fix:
+    //   - the optimistic latch is set BEFORE the enqueue HTTP call, so a
+    //     concurrent same-URI state event short-circuits and does not arm
+    //     a second job;
+    //   - the enqueue HTTP runs inside withContext(NonCancellable), so a
+    //     triggerJob.cancel() from a follow-up state event cannot abort the
+    //     call mid-flight.
+    //
+    // Before the fix, a state event arriving during the 1–3 s HTTP window
+    // either lost the enqueue entirely (cancel landed between probe and
+    // enqueue) or, less commonly, double-issued it. The first case is the
+    // drift symptom the user reported: status card says "Enqueued ✓", actual
+    // queue is empty, Spotify falls back to its context's next track.
+    //
+    // A MockK stub cannot suspend cleanly inside `answers { … }` (the block
+    // is non-suspending per TESTING_CONVENTIONS), so the race tests use a
+    // tiny gated fake for the PlaybackRepository instead of a mock. All
+    // other collaborators stay as the class-level mocks.
+
+    private class GatedPlaybackRepository(
+        val gate: CompletableDeferred<Outcome<Unit>>,
+        val premium: Outcome<Boolean> = Outcome.Success(true),
+    ) : PlaybackRepository {
+        @Volatile var enqueueCalls = 0
+            private set
+        @Volatile var lastDeviceId: String? = "unset"
+            private set
+
+        override suspend fun isPremium(): Outcome<Boolean> = premium
+
+        // Defensive: the orchestrator no longer calls activeDeviceId() after
+        // the race fix (the /me/player/devices probe was removed). If a
+        // refactor accidentally re-introduces the call, this trips the test
+        // loud-and-fast instead of silently returning Success(null).
+        override suspend fun activeDeviceId(): Outcome<String?> =
+            error("activeDeviceId() must not be called from the orchestrator")
+
+        override suspend fun enqueue(uri: String, deviceId: String?): Outcome<Unit> {
+            enqueueCalls += 1
+            lastDeviceId = deviceId
+            return gate.await()
+        }
+    }
+
+    @Test fun `state event during in-flight enqueue does not cancel or duplicate the call`() =
+        runTest(mainRule.testScheduler) {
+            val gate = CompletableDeferred<Outcome<Unit>>()
+            val gatedPlayback = GatedPlaybackRepository(gate)
+            val raceSut = PlaybackOrchestrator(
+                source, pickNext, gatedPlayback, recents,
+                playerStateHolder, previewHolder,
+                log = mockk<LogSink>(relaxed = true),
+            )
+
+            val job = launch { raceSut.run(50) }
+            runCurrent()
+
+            // First emit drives the trigger fire immediately (remainingMs <
+            // TRIGGER_MS). enqueue suspends on the gate.
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+            assertThat(gatedPlayback.lastDeviceId).isNull()  // we pass null
+
+            // Second emit (same URI, slightly later position) arrives while
+            // the enqueue is still suspended on the gate. With the fix:
+            //   1. The latch was claimed BEFORE the HTTP call, so the
+            //      collect-side `trackUri == lastEnqueuedForTrackId` check
+            //      short-circuits and we never arm a second job.
+            //   2. Even if a second job WERE armed, the NonCancellable block
+            //      around the suspended enqueue would shield the in-flight
+            //      call from triggerJob.cancel().
+            playerStates.emit(nearEnd("spotify:track:1").copy(positionMs = 195_000))
+            runCurrent()
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+
+            // Complete the gate. The original call resumes and succeeds.
+            gate.complete(Outcome.Success(Unit))
+            runCurrent()
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+            // Pins NonCancellable specifically (the latch alone would also
+            // collapse the second emit to 0 new calls, so enqueueCalls == 1
+            // is necessary-but-not-sufficient). recents.record runs only in
+            // the success path AFTER gate.await returns. Without
+            // NonCancellable, triggerJob.cancel() from the second emit would
+            // have propagated to gate.await, thrown CancellationException,
+            // and the success path — including recents.record — would never
+            // have executed.
+            coVerify(exactly = 1) { recents.record(any()) }
+
+            job.cancel()
+        }
+
+    @Test fun `latch is claimed before HTTP so a concurrent same-URI event cannot double-enqueue`() =
+        runTest(mainRule.testScheduler) {
+            // Two distinct gates: if the latch were set AFTER the HTTP (the
+            // pre-fix code path), the second emission would observe the
+            // latch as still-empty, arm a second job, and call enqueue again.
+            // With the fix, the latch is bound the moment the trigger fires,
+            // so the second emission short-circuits.
+            val gate = CompletableDeferred<Outcome<Unit>>()
+            val gatedPlayback = GatedPlaybackRepository(gate)
+            val raceSut = PlaybackOrchestrator(
+                source, pickNext, gatedPlayback, recents,
+                playerStateHolder, previewHolder,
+                log = mockk<LogSink>(relaxed = true),
+            )
+
+            val job = launch { raceSut.run(50) }
+            runCurrent()
+
+            // Flood the same URI through the source while the first enqueue
+            // is suspended on the gate. All same-URI emissions must collapse
+            // into a single attempt.
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+            repeat(5) { i ->
+                playerStates.emit(
+                    nearEnd("spotify:track:1").copy(positionMs = 193_000L + i * 200)
+                )
+            }
+            runCurrent()
+
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+
+            gate.complete(Outcome.Success(Unit))
+            runCurrent()
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+
+            job.cancel()
+        }
+
+    @Test fun `track change during in-flight enqueue does not clobber the new pre-pick`() =
+        runTest(mainRule.testScheduler) {
+            // Pins the preview-reset guard. Sequence:
+            //   1. Track:1 hits the trigger zone. pre-pick sets previewHolder
+            //      to firstPick. The enqueue HTTP suspends on the gate.
+            //   2. Track:2 starts playing while track:1's enqueue is still
+            //      in-flight. The collect-side fires Listening for track:2
+            //      and pre-picks secondPick — previewHolder now shows
+            //      secondPick. A new triggerJob for track:2 is armed and
+            //      sits in delay().
+            //   3. Gate completes. Track:1's enqueue success path runs. The
+            //      guard `pendingPick === picked` is false (pendingPick is
+            //      now secondPick, picked was firstPick), so neither
+            //      pendingPick nor previewHolder are reset. The user keeps
+            //      seeing "Next: secondPick" — no UI flash.
+            //
+            // Without the guard, previewHolder.track.value would be null
+            // after gate.complete and this test would fail.
+            val gate = CompletableDeferred<Outcome<Unit>>()
+            val gatedPlayback = GatedPlaybackRepository(gate)
+            val firstPick = trackOf("spotify:track:next-1")
+            val secondPick = trackOf("spotify:track:next-2")
+            coEvery { pickNext(50) } returnsMany listOf(
+                Outcome.Success(firstPick),
+                Outcome.Success(secondPick),
+            )
+            val raceSut = PlaybackOrchestrator(
+                source, pickNext, gatedPlayback, recents,
+                playerStateHolder, previewHolder,
+                log = mockk<LogSink>(relaxed = true),
+            )
+
+            val job = launch { raceSut.run(50) }
+            runCurrent()
+
+            // 1) Track:1 → trigger → enqueue suspends.
+            playerStates.emit(nearEnd("spotify:track:1"))
+            runCurrent()
+            assertThat(previewHolder.track.value).isEqualTo(firstPick)
+            assertThat(gatedPlayback.enqueueCalls).isEqualTo(1)
+
+            // 2) Track:2 begins (early position, well outside the trigger
+            // window — its own enqueue won't fire here, only its pre-pick).
+            playerStates.emit(
+                PlayerState(
+                    trackUri = "spotify:track:2",
+                    trackName = "Second",
+                    artistName = "ArtistB",
+                    positionMs = 1_000,
+                    durationMs = 200_000,
+                    isPaused = false,
+                )
+            )
+            runCurrent()
+            assertThat(previewHolder.track.value).isEqualTo(secondPick)
+
+            // 3) Track:1's enqueue completes. Guard must protect secondPick.
+            gate.complete(Outcome.Success(Unit))
+            runCurrent()
+
+            assertThat(previewHolder.track.value).isEqualTo(secondPick)
+            // recents got the URI for the pick we actually enqueued, not
+            // the one currently in the preview.
+            coVerify(exactly = 1) { recents.record(firstPick.uri) }
+            coVerify(exactly = 0) { recents.record(secondPick.uri) }
+
             job.cancel()
         }
 

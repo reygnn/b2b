@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -190,23 +189,22 @@ private fun LogPanel(
                 style = MaterialTheme.typography.bodyMedium,
             )
         } else {
-            // SelectionContainer makes every row's text selectable +
-            // copyable via the standard long-press text-selection UI.
-            // Wraps the LazyColumn rather than each row so the user
-            // can sweep across multiple lines in one selection.
-            SelectionContainer(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxWidth(),
-                    reverseLayout = true,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(entries.asReversed(), key = { "${it.epochMs}-${it.message.hashCode()}" }) {
-                        Text(
-                            text = "${LOG_TIME_FORMAT.format(Date(it.epochMs))}  ${it.message}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        )
-                    }
+            // No SelectionContainer here: with the high-frequency state-event
+            // logs feeding new rows, long-press text selection trips a known
+            // Compose SelectionManager bug (NoSuchElementException in
+            // getSelectionLayout). The 📋 icon above is the supported
+            // copy-out path; per-row selection is redundant.
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                reverseLayout = true,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                items(entries.asReversed(), key = { it.id }) {
+                    Text(
+                        text = "${LOG_TIME_FORMAT.format(Date(it.epochMs))}  ${it.message}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    )
                 }
             }
         }

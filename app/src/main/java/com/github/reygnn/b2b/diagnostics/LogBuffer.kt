@@ -23,13 +23,18 @@ import javax.inject.Singleton
 class LogBuffer @Inject constructor() : LogSink {
     private val lock = Any()
     private val buffer = ArrayDeque<LogEntry>(MAX_ENTRIES)
+    private var nextId: Long = 0L
 
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
     override fun log(message: String) {
-        val entry = LogEntry(epochMs = System.currentTimeMillis(), message = message)
         val snapshot = synchronized(lock) {
+            val entry = LogEntry(
+                id = nextId++,
+                epochMs = System.currentTimeMillis(),
+                message = message,
+            )
             buffer.addLast(entry)
             while (buffer.size > MAX_ENTRIES) buffer.removeFirst()
             buffer.toList()

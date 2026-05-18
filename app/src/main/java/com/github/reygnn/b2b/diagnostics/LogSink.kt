@@ -10,6 +10,11 @@ interface LogSink {
 }
 
 data class LogEntry(
+    // Monotonically-increasing sequence number assigned by the LogBuffer.
+    // The LazyColumn in the log panel keys items by this value so multiple
+    // log calls within the same millisecond don't collide (which would crash
+    // the column with `Key "..." was already used`).
+    val id: Long,
     val epochMs: Long,
     val message: String,
 )

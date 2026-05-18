@@ -221,9 +221,11 @@ Same rule for any future `stateIn(scope, WhileSubscribed(...), ...)`.
 ## Versioning
 
 `versionName` / `versionCode` live in `app/build.gradle.kts`. b2b is not
-under semver — the README's "Status: Skelett" is the canonical state
-description. When the two PKCE TODOs and the App Remote wiring land, bump
-to `0.2.0`.
+strictly under semver; the README's `Status` line is the canonical state
+description. Convention so far: bump `versionCode` by one and pick a
+`versionName` that makes sense for the change set (point releases for
+small fixes, minor releases when something user-visible lands). Every
+bump gets its own `chore: bump version to X.Y.Z (versionCode N)` commit.
 
 ---
 

@@ -69,7 +69,7 @@
     <!-- Logs -->
     <string name="logs_title">Logs</string>
     <string name="logs_empty">No log entries yet.</string>
-    <string name="logs_clear">Clear</string>
+    <string name="logs_clear_cd">Clear log</string>
     <string name="logs_copy_cd">Copy log to clipboard</string>
     <string name="logs_copied_toast">Log copied</string>
 </resources>

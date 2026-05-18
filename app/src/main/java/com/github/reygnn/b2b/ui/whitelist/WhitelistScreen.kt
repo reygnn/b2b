@@ -149,6 +149,7 @@ private fun LogPanel(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val copyContentDescription = stringResource(R.string.logs_copy_cd)
+    val clearContentDescription = stringResource(R.string.logs_clear_cd)
     val copiedToast = stringResource(R.string.logs_copied_toast)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -178,8 +179,12 @@ private fun LogPanel(
                 ) {
                     Text("📋", style = MaterialTheme.typography.titleMedium)
                 }
-                TextButton(onClick = onClear) {
-                    Text(stringResource(R.string.logs_clear))
+                IconButton(
+                    onClick = onClear,
+                    enabled = entries.isNotEmpty(),
+                    modifier = Modifier.semantics { contentDescription = clearContentDescription },
+                ) {
+                    Text("🗑", style = MaterialTheme.typography.titleMedium)
                 }
             }
         }

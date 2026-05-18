@@ -1,4 +1,4 @@
-package com.github.reygnn.b2b.ui.whitelist
+package com.github.reygnn.b2b.ui.home
 
 import android.content.Intent
 import android.widget.Toast
@@ -59,10 +59,10 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WhitelistScreen(
+fun HomeScreen(
     onOpenArtists: () -> Unit,
     onOpenSettings: () -> Unit,
-    vm: WhitelistViewModel = hiltViewModel(),
+    vm: HomeViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val serviceRunning by vm.isServiceRunning.collectAsState()
@@ -88,7 +88,7 @@ fun WhitelistScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("${stringResource(R.string.whitelist_title)}  ·  ${BuildConfig.VERSION_NAME}") },
+                title = { Text("${stringResource(R.string.home_title)}  ·  ${BuildConfig.VERSION_NAME}") },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Text("⚙")
@@ -125,7 +125,7 @@ fun WhitelistScreen(
                 onClick = onOpenArtists,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(stringResource(R.string.whitelist_manage_artists))
+                Text(stringResource(R.string.home_manage_artists))
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))

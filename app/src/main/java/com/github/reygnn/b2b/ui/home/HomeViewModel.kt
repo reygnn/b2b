@@ -1,4 +1,4 @@
-package com.github.reygnn.b2b.ui.whitelist
+package com.github.reygnn.b2b.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -30,7 +30,7 @@ import javax.inject.Inject
  * management lives on a separate screen ([com.github.reygnn.b2b.ui.artists]).
  */
 @HiltViewModel
-class WhitelistViewModel @Inject constructor(
+class HomeViewModel @Inject constructor(
     private val orchestrator: PlaybackOrchestrator,
     private val logBuffer: LogBuffer,
     poolRepo: PoolRepository,

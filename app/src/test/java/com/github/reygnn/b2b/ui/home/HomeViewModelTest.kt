@@ -1,4 +1,4 @@
-package com.github.reygnn.b2b.ui.whitelist
+package com.github.reygnn.b2b.ui.home
 
 import app.cash.turbine.test
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
@@ -26,7 +26,7 @@ import org.junit.Rule
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class WhitelistViewModelTest {
+class HomeViewModelTest {
 
     @get:Rule val mainRule = MainDispatcherRule()
 
@@ -160,7 +160,7 @@ class WhitelistViewModelTest {
         assertThat(sut.logEntries.value).isEmpty()
     }
 
-    private fun newSut() = WhitelistViewModel(
+    private fun newSut() = HomeViewModel(
         orchestrator = orchestrator,
         logBuffer = logBuffer,
         poolRepo = poolRepo,

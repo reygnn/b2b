@@ -73,7 +73,7 @@ clean, keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
 2. Spotify-Redirect `b2b://callback?code=...` landet via Intent-Filter
    in `MainActivity`, das den Code via `PkceAuthManager` einlöst.
    Tokens sind verschlüsselt in `EncryptedSharedPreferences`.
-3. Nav-Graph schaltet automatisch auf `WhitelistScreen` (gating über
+3. Nav-Graph schaltet automatisch auf `HomeScreen` (gating über
    `TokenStore.authState()`).
 4. **„Manage artists"** öffnet den dedizierten Artists-Screen: Suche
    (mit 300 ms Debounce) liefert Treffer als Checkbox-Liste, Häkchen-
@@ -87,7 +87,7 @@ clean, keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
    `delay(durationMs - positionMs - 15_000)` arms pro Track-Event, beim
    Ablauf wird der nächste Pool-Track in Spotifys Queue geschoben.
    Pro Track-URI feuert das genau einmal (Per-Track-Latch).
-6. **Status-Karte** auf dem Whitelist-Screen rendert live:
+6. **Status-Karte** auf dem Home-Screen rendert live:
    - aktueller `OrchestratorStatus` (`Currently:` / `✓ Last enqueued:` /
      `⚠ Spotify: <reason>` / `Not started`)
    - `Next: <Track> — <Artist> ↻` — der vorgemerkte Pool-Pick, der
@@ -225,8 +225,9 @@ app/src/main/java/com/github/reygnn/b2b/
     ├── theme/B2BTheme.kt    Material You dynamic color, system dark/light
     ├── nav/AppNavHost.kt    Login ↔ Whitelist ↔ Artists ↔ Settings
     ├── login/               LoginScreen + ViewModel
-    ├── whitelist/           WhitelistScreen + ViewModel (Status-Karte,
-    │                        Service-Toggle, Skip-Pick, Log-Panel)
+    ├── home/                HomeScreen + ViewModel (Status-Karte,
+    │                        Service-Toggle, Skip-Pick, Log-Panel,
+    │                        BuildConfig.VERSION_NAME in der TopAppBar)
     ├── artists/             ArtistsScreen + ViewModel (Search-Debounce,
     │                        Checkbox-Toggle-Liste für die Whitelist)
     └── settings/            SettingsScreen + ViewModel (Manual-Sync,

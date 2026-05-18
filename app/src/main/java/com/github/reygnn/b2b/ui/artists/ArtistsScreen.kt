@@ -32,7 +32,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import com.github.reygnn.b2b.BuildConfig
 import com.github.reygnn.b2b.R
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,7 +46,7 @@ fun ArtistsScreen(
     var query by remember { mutableStateOf("") }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("${stringResource(R.string.artists_title)}  ·  ${BuildConfig.VERSION_NAME}") }) }
+        topBar = { TopAppBar(title = { Text(stringResource(R.string.artists_title)) }) }
     ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),

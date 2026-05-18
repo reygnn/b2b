@@ -206,8 +206,9 @@ all mocking (`mockk-agent` is on the classpath for final Kotlin classes).
 Turbine for Flow assertions. `OkHttp MockWebServer` is on the test
 classpath for `AuthInterceptor`-style HTTP tests.
 
-**WhileSubscribed gotcha.** `WhitelistViewModel.whitelisted` uses
-`SharingStarted.WhileSubscribed(5_000)`. In tests against that StateFlow,
+**WhileSubscribed gotcha.** `HomeViewModel.poolTrackCount` (and the
+sibling `lastSyncEpochMs` / `isSyncing` flows) use
+`SharingStarted.WhileSubscribed(5_000)`. In tests against those StateFlows,
 `advanceUntilIdle()` runs the virtual clock past the 5 s subscription
 timeout, drops the upstream, and reverts the value to `initial` — the
 test then asserts against a stale value with no useful error. Use

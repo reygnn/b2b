@@ -50,7 +50,7 @@ package com.github.reygnn.b2b
  *
  * ## 2. WhileSubscribed: use `runCurrent()`, NOT `advanceUntilIdle()`.
  *
- * `WhitelistViewModel.whitelisted` (and any future StateFlow built with
+ * `HomeViewModel.poolTrackCount` (and any future StateFlow built with
  * `stateIn(scope, SharingStarted.WhileSubscribed(N), initial)`) installs a
  * subscription-timeout coroutine. `advanceUntilIdle()` runs the virtual clock
  * until ALL scheduled work is done — including that timeout. By the time the

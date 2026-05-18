@@ -10,13 +10,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.github.reygnn.b2b.ui.AppViewModel
 import com.github.reygnn.b2b.ui.artists.ArtistsScreen
+import com.github.reygnn.b2b.ui.home.HomeScreen
 import com.github.reygnn.b2b.ui.login.LoginScreen
 import com.github.reygnn.b2b.ui.settings.SettingsScreen
-import com.github.reygnn.b2b.ui.whitelist.WhitelistScreen
 
 object Routes {
     const val LOGIN = "login"
-    const val WHITELIST = "whitelist"
+    const val HOME = "home"
     const val ARTISTS = "artists"
     const val SETTINGS = "settings"
 }
@@ -25,14 +25,14 @@ object Routes {
 fun AppNavHost(vm: AppViewModel = hiltViewModel()) {
     val isAuthed by vm.isAuthenticated.collectAsState()
     val nav = rememberNavController()
-    val start = if (isAuthed) Routes.WHITELIST else Routes.LOGIN
+    val start = if (isAuthed) Routes.HOME else Routes.LOGIN
 
     NavHost(navController = nav, startDestination = start) {
         composable(Routes.LOGIN) {
             LoginScreen()
         }
-        composable(Routes.WHITELIST) {
-            WhitelistScreen(
+        composable(Routes.HOME) {
+            HomeScreen(
                 onOpenArtists = { nav.navigate(Routes.ARTISTS) },
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
             )
@@ -45,10 +45,10 @@ fun AppNavHost(vm: AppViewModel = hiltViewModel()) {
         }
     }
 
-    // React to auth state changes: kick from login → whitelist on sign-in,
+    // React to auth state changes: kick from login → home on sign-in,
     // and from any logged-in screen back to login on sign-out.
     LaunchedEffect(isAuthed) {
-        val target = if (isAuthed) Routes.WHITELIST else Routes.LOGIN
+        val target = if (isAuthed) Routes.HOME else Routes.LOGIN
         val current = nav.currentDestination?.route
         if (current != null && current != target) {
             nav.navigate(target) {

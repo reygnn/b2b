@@ -22,7 +22,7 @@ data class OrchestratorStatusSnapshot(
 
 /**
  * App-wide latest [OrchestratorStatus], for the UI to render. The service
- * writes into this; the WhitelistViewModel reads from it.
+ * writes into this; the HomeViewModel reads from it.
  *
  * Singleton holder pattern mirrors [com.github.reygnn.b2b.service.ServiceState]:
  * a single source of truth that survives ViewModel rotations and outlives the

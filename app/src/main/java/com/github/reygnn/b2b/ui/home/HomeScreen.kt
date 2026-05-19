@@ -1,5 +1,6 @@
 package com.github.reygnn.b2b.ui.home
 
+import android.content.ClipData
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -24,7 +25,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.runtime.Composable
@@ -33,10 +33,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -54,6 +56,7 @@ import com.github.reygnn.b2b.playback.PlaybackOrchestrator
 import com.github.reygnn.b2b.playback.PlayerStateSnapshot
 import com.github.reygnn.b2b.service.PlaybackOrchestratorService
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -154,7 +157,8 @@ private fun LogPanel(
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) listState.animateScrollToItem(0)
     }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val clipboardScope = rememberCoroutineScope()
     val context = LocalContext.current
     val copyContentDescription = stringResource(R.string.logs_copy_cd)
     val clearContentDescription = stringResource(R.string.logs_clear_cd)
@@ -207,8 +211,19 @@ private fun LogPanel(
                         val dump = entries.joinToString("\n") { entry ->
                             "${LOG_TIME_FORMAT.format(Date(entry.epochMs))}  ${entry.message}"
                         }
-                        clipboard.setText(AnnotatedString(dump))
-                        Toast.makeText(context, copiedToast, Toast.LENGTH_SHORT).show()
+                        // LocalClipboard.setClipEntry is suspend (the
+                        // platform exposes the system clipboard service
+                        // asynchronously). Launch in the composable's
+                        // remembered scope; the Toast moves inside the
+                        // launch so it fires only after the entry was
+                        // actually published — strictly correct, also a
+                        // few-microsecond delay in practice.
+                        clipboardScope.launch {
+                            clipboard.setClipEntry(
+                                ClipEntry(ClipData.newPlainText("b2b log", dump))
+                            )
+                            Toast.makeText(context, copiedToast, Toast.LENGTH_SHORT).show()
+                        }
                     },
                     enabled = entries.isNotEmpty(),
                     modifier = Modifier.semantics { contentDescription = copyContentDescription },

@@ -101,10 +101,16 @@ private fun map403(body: ErrorBody): Outcome.Error = when (body.reason) {
     "PREMIUM_REQUIRED" -> Outcome.Error.NotPremium
     "NO_ACTIVE_DEVICE" -> Outcome.Error.NoActiveDevice
     null -> {
-        // Pre-Player-API 403s (and a few current ones) carry only `message`.
-        // The substring check is the explicit "Premium required" signal —
-        // any other message keeps us out of the terminal path.
-        if (body.message?.contains("Premium required", ignoreCase = true) == true)
+        // Pre-Player-API 403s (and a few current ones) carry only `message`,
+        // no `reason`. We match the brand name "Premium" rather than the
+        // exact English phrase "Premium required" — Spotify keeps its
+        // error strings in English today, but should that ever change the
+        // brand name typically survives translation ("Cuenta Premium
+        // requerida", "Premium-Account erforderlich"), and matching the
+        // word "premium" case-insensitive catches both. False positives
+        // would require an unrelated 403 whose body coincidentally
+        // mentions Premium; Spotify has no such message in practice.
+        if (body.message?.contains("premium", ignoreCase = true) == true)
             Outcome.Error.NotPremium
         else
             Outcome.Error.Unknown(formatHttpError(403, body))

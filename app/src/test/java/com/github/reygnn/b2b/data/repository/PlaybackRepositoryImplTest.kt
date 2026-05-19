@@ -92,6 +92,41 @@ class PlaybackRepositoryImplTest {
             assertThat(result).isEqualTo(Outcome.Error.NotPremium)
         }
 
+    @Test fun `enqueue maps 403 with no reason but localized Premium message to NotPremium`() =
+        runTest(mainRule.testScheduler) {
+            // The null-reason fallback matches the brand name "Premium"
+            // case-insensitively, not the exact English phrase — should
+            // Spotify ever localize their error strings the brand survives
+            // ("Premium-Account erforderlich", "Cuenta Premium requerida").
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Premium-Account erforderlich"}}"""
+                )
+            )
+
+            val result = sut.enqueue("spotify:track:abc", "device-1")
+
+            assertThat(result).isEqualTo(Outcome.Error.NotPremium)
+        }
+
+    @Test fun `enqueue maps 403 with non-Premium message to Unknown`() =
+        runTest(mainRule.testScheduler) {
+            // Pins the negative side of the broadened "premium" matcher:
+            // a 403 whose body has no Premium mention must stay Unknown
+            // so the orchestrator keeps arming triggers (RetryLater path).
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Forbidden by region policy"}}"""
+                )
+            )
+
+            val result = sut.enqueue("spotify:track:abc", "device-1")
+
+            assertThat(result).isInstanceOf(Outcome.Error.Unknown::class.java)
+            val message = (result as Outcome.Error.Unknown).message
+            assertThat(message).contains("Forbidden by region policy")
+        }
+
     @Test fun `enqueue maps bare 403 with no body to Unknown (not NotPremium)`() =
         runTest(mainRule.testScheduler) {
             // Pins the 2026-05-19 fix: a 403 with NO body must not silently

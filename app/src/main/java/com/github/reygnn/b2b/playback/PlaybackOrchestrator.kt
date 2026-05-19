@@ -158,8 +158,14 @@ class PlaybackOrchestrator @Inject constructor(
         // for Spotify Web API playback control. Hoisted out of enqueueOnce
         // (where it ran on every track) into a one-shot at session start:
         //   - Non-premium → emit FreeTier, exit. No point arming triggers.
-        //   - Transient error (network, 429) → log + emit, then proceed. The
-        //     real enqueue will surface a persistent 403 again as NotPremium.
+        //   - Other error (network, 429, opaque 403, …) → log + emit, then
+        //     proceed. A real free-tier account always answers with a
+        //     PREMIUM_REQUIRED reason or at minimum the word "premium" in
+        //     the message body (see Repositories.kt::map403), so the next
+        //     enqueue still classifies as NotPremium and terminates the
+        //     session correctly. A bare 403 without that signal — the
+        //     2026-05-19 transient-Spotify-backend case — proceeds and
+        //     lets the orchestrator recover when Spotify does.
         //   - Premium → proceed silently. Account product can flip mid-session
         //     (rare, but cheap to handle): enqueueOnce maps a fresh 403 to
         //     FreeTier and we stop firing for that account naturally.

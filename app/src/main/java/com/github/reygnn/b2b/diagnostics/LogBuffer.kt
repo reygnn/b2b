@@ -36,7 +36,16 @@ class LogBuffer @Inject constructor() : LogSink {
     fun setTraceEnabled(on: Boolean) { _traceEnabled.value = on }
 
     override fun log(message: String) {
-        val snapshot = synchronized(lock) {
+        // The StateFlow assignment lives inside the lock so the snapshot
+        // built under a given critical section is the one that is published.
+        // Without it, two concurrent log() calls (orchestrator on
+        // @DefaultDispatcher + repository on @IoDispatcher, very real once
+        // trace is on) could each build a snapshot inside their own
+        // synchronized block, then publish them in arbitrary order outside
+        // the lock — the later snapshot can lose to the earlier one, and a
+        // freshly-appended entry vanishes from the UI even though the
+        // internal buffer still holds it.
+        synchronized(lock) {
             val entry = LogEntry(
                 id = nextId++,
                 epochMs = System.currentTimeMillis(),
@@ -44,9 +53,8 @@ class LogBuffer @Inject constructor() : LogSink {
             )
             buffer.addLast(entry)
             while (buffer.size > MAX_ENTRIES) buffer.removeFirst()
-            buffer.toList()
+            _entries.value = buffer.toList()
         }
-        _entries.value = snapshot
     }
 
     override fun trace(message: String) {
@@ -54,8 +62,10 @@ class LogBuffer @Inject constructor() : LogSink {
     }
 
     fun clear() {
-        synchronized(lock) { buffer.clear() }
-        _entries.value = emptyList()
+        synchronized(lock) {
+            buffer.clear()
+            _entries.value = emptyList()
+        }
     }
 
     private companion object {

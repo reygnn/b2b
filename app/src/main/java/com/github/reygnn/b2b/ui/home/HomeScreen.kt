@@ -26,6 +26,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -157,7 +158,12 @@ private fun LogPanel(
     val context = LocalContext.current
     val copyContentDescription = stringResource(R.string.logs_copy_cd)
     val clearContentDescription = stringResource(R.string.logs_clear_cd)
-    val traceContentDescription = stringResource(R.string.logs_trace_cd)
+    // State-aware A11y description so TalkBack reads the current toggle
+    // state ("on"/"off"); the platform appends "Double-tap to toggle"
+    // automatically — don't bake it into the string here.
+    val traceContentDescription = stringResource(
+        if (traceEnabled) R.string.logs_trace_cd_active else R.string.logs_trace_cd_inactive
+    )
     val copiedToast = stringResource(R.string.logs_copied_toast)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -175,12 +181,22 @@ private fun LogPanel(
                 // fire/http). Off by default; opt-in is the point of the
                 // 🐛 icon — chronic state-dump traffic crowds the buffer
                 // and isn't useful for normal sessions.
+                //
+                // Visual state: a strike-through on the 🐛 glyph when the
+                // toggle is off makes the current trace state legible at a
+                // glance (without it, the IconToggleButton's checked/
+                // unchecked background is too subtle on a small phone
+                // screen for a single-character emoji to read clearly).
                 IconToggleButton(
                     checked = traceEnabled,
                     onCheckedChange = onSetTraceEnabled,
                     modifier = Modifier.semantics { contentDescription = traceContentDescription },
                 ) {
-                    Text("🐛", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "🐛",
+                        style = MaterialTheme.typography.titleMedium,
+                        textDecoration = if (traceEnabled) null else TextDecoration.LineThrough,
+                    )
                 }
                 IconButton(
                     onClick = {

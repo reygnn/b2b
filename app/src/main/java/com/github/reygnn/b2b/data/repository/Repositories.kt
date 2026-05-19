@@ -26,48 +26,100 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Default HTTP-status mapping for the Spotify Web API. 404 is intentionally
- * mapped to [Outcome.Error.Unknown] rather than [Outcome.Error.NoActiveDevice]
- * — the "no active device" semantics are specific to the player endpoints
- * (`/me/player/queue`); for everything else, a 404 just means the resource
- * wasn't found. Endpoints that need the player-specific mapping handle 404
- * inline before delegating to this function.
+ * Default HTTP-status mapping for the Spotify Web API.
+ *
+ * - 401 → [Outcome.Error.Unauthenticated]. AuthInterceptor already retried once
+ *   with a refreshed token before we get here.
+ * - 403 → see [map403]. Spotify uses 403 for many reasons (premium-required,
+ *   restricted-device, rate-limited variants, scope issues, account penalty);
+ *   we read the `error.reason` field (and fall back to `error.message`) to
+ *   distinguish the "session is over for real" case ([Outcome.Error.NotPremium])
+ *   from transient/policy-style failures. A bare 403 with no body becomes
+ *   [Outcome.Error.Unknown] rather than [Outcome.Error.NotPremium] — the
+ *   silent-default-to-NotPremium was diagnosed in 2026-05-19 as terminating
+ *   sessions for transient Spotify-side hiccups.
+ * - 404 → [Outcome.Error.Unknown]. The "no active device" semantics are
+ *   specific to the player endpoints (`/me/player/queue`); for everything
+ *   else, 404 just means the resource wasn't found. Endpoints that need the
+ *   player-specific mapping handle 404 inline before delegating to this
+ *   function.
+ * - 429 → [Outcome.Error.RateLimited] with Retry-After (default 1s).
  */
 private inline fun <T, R> Response<T>.toOutcome(transform: (T) -> R): Outcome<R> {
     if (isSuccessful) return body()?.let { Outcome.Success(transform(it)) }
         ?: Outcome.Error.Unknown("empty body")
+    // Single read of errorBody().string() — the underlying source is one-shot.
+    val body = parseErrorBody()
     return when (code()) {
         401 -> Outcome.Error.Unauthenticated
-        403 -> Outcome.Error.NotPremium
+        403 -> map403(body)
         429 -> Outcome.Error.RateLimited(
             retryAfterSeconds = headers()["Retry-After"]?.toIntOrNull() ?: 1
         )
-        else -> Outcome.Error.Unknown(describeError())
+        else -> Outcome.Error.Unknown(formatHttpError(code(), body))
     }
 }
 
 /**
- * Pulls Spotify's error envelope (`{"error":{"status":N,"message":"..."}}`)
- * out of the response body and folds it into a one-line description. The
- * raw text is included as a fallback so unknown response shapes still
- * surface something useful in the UI rather than just the status code.
+ * Parsed view of Spotify's `{"error":{"status":N,"message":"...","reason":"..."}}`
+ * envelope. `reason` is set by the Player API endpoints (`/me/player/...`);
+ * non-player endpoints omit it. Both fields are nullable: malformed bodies,
+ * empty bodies, and pre-Player-API endpoints all collapse to all-null.
  */
-private fun Response<*>.describeError(): String {
-    val code = code()
+private data class ErrorBody(val message: String?, val reason: String?, val raw: String)
+
+private fun Response<*>.parseErrorBody(): ErrorBody {
     val raw = try { errorBody()?.string()?.trim().orEmpty() } catch (_: Exception) { "" }
-    if (raw.isEmpty()) return "HTTP $code"
-    val message = try {
+    if (raw.isEmpty()) return ErrorBody(message = null, reason = null, raw = "")
+    val error = try {
         kotlinx.serialization.json.Json
             .parseToJsonElement(raw)
             .jsonObjectOrNull()
             ?.get("error")
             ?.jsonObjectOrNull()
-            ?.get("message")
-            ?.jsonPrimitiveOrNull()
-            ?.content
     } catch (_: Exception) { null }
-    return if (!message.isNullOrBlank()) "HTTP $code: $message"
-    else "HTTP $code: ${raw.take(200)}"
+    return ErrorBody(
+        message = error?.get("message")?.jsonPrimitiveOrNull()?.content,
+        reason = error?.get("reason")?.jsonPrimitiveOrNull()?.content,
+        raw = raw,
+    )
+}
+
+/**
+ * Maps a 403 response to a specific [Outcome.Error]. Only `PREMIUM_REQUIRED`
+ * (and the legacy message-based fallback) terminate the playback session;
+ * everything else surfaces as [Outcome.Error.Unknown] with the parsed reason
+ * + message folded into the description so the log panel and the
+ * `SpotifyUnavailable` status line show what Spotify actually said.
+ *
+ * Note on `NO_ACTIVE_DEVICE`: the `/me/player/queue` endpoint returns 404 for
+ * this case (handled inline in [PlaybackRepositoryImpl.enqueue] before
+ * reaching here); we still map a 403 with this reason in case Spotify ever
+ * changes that — keeps the player-state semantics consistent.
+ */
+private fun map403(body: ErrorBody): Outcome.Error = when (body.reason) {
+    "PREMIUM_REQUIRED" -> Outcome.Error.NotPremium
+    "NO_ACTIVE_DEVICE" -> Outcome.Error.NoActiveDevice
+    null -> {
+        // Pre-Player-API 403s (and a few current ones) carry only `message`.
+        // The substring check is the explicit "Premium required" signal —
+        // any other message keeps us out of the terminal path.
+        if (body.message?.contains("Premium required", ignoreCase = true) == true)
+            Outcome.Error.NotPremium
+        else
+            Outcome.Error.Unknown(formatHttpError(403, body))
+    }
+    else -> Outcome.Error.Unknown(formatHttpError(403, body))
+}
+
+private fun formatHttpError(code: Int, body: ErrorBody): String = buildString {
+    append("HTTP ").append(code)
+    if (!body.reason.isNullOrBlank()) append(' ').append(body.reason)
+    when {
+        !body.message.isNullOrBlank() -> append(": ").append(body.message)
+        body.raw.isNotEmpty() && body.reason.isNullOrBlank() ->
+            append(": ").append(body.raw.take(200))
+    }
 }
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull() =

@@ -61,13 +61,120 @@ class PlaybackRepositoryImplTest {
             assertThat(result).isEqualTo(Outcome.Error.NoActiveDevice)
         }
 
-    @Test fun `enqueue maps 403 to NotPremium`() = runTest(mainRule.testScheduler) {
-        server.enqueue(MockResponse().setResponseCode(403))
+    @Test fun `enqueue maps 403 PREMIUM_REQUIRED to NotPremium`() =
+        runTest(mainRule.testScheduler) {
+            // Canonical terminal-session signal: Player API's structured 403.
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Player command failed: Premium required","reason":"PREMIUM_REQUIRED"}}"""
+                )
+            )
 
-        val result = sut.enqueue("spotify:track:abc", "device-1")
+            val result = sut.enqueue("spotify:track:abc", "device-1")
 
-        assertThat(result).isEqualTo(Outcome.Error.NotPremium)
-    }
+            assertThat(result).isEqualTo(Outcome.Error.NotPremium)
+        }
+
+    @Test fun `enqueue maps 403 with no reason but premium-required message to NotPremium`() =
+        runTest(mainRule.testScheduler) {
+            // Legacy / non-Player-API 403 shape — only `message`, no `reason`.
+            // The substring check keeps backward compat with older Spotify
+            // responses that may have triggered the original (pre-fix)
+            // NotPremium path.
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Premium required"}}"""
+                )
+            )
+
+            val result = sut.enqueue("spotify:track:abc", "device-1")
+
+            assertThat(result).isEqualTo(Outcome.Error.NotPremium)
+        }
+
+    @Test fun `enqueue maps bare 403 with no body to Unknown (not NotPremium)`() =
+        runTest(mainRule.testScheduler) {
+            // Pins the 2026-05-19 fix: a 403 with NO body must not silently
+            // terminate the session as if it were a definitive Premium
+            // failure. Without an explicit signal we surface as Unknown so
+            // the orchestrator's `is Outcome.Error` branch maps it to
+            // SpotifyUnavailable (RetryLater), not Terminal.
+            server.enqueue(MockResponse().setResponseCode(403))
+
+            val result = sut.enqueue("spotify:track:abc", "device-1")
+
+            assertThat(result).isInstanceOf(Outcome.Error.Unknown::class.java)
+            val message = (result as Outcome.Error.Unknown).message
+            assertThat(message).contains("403")
+        }
+
+    @Test fun `enqueue maps 403 RESTRICTED_DEVICE to Unknown with reason in message`() =
+        runTest(mainRule.testScheduler) {
+            // Spotify's Player API 403 for "your device class can't run this
+            // command" (often hit on cars, some speakers). MUST NOT be
+            // terminal — the user can move playback to a phone/desktop and
+            // we should keep arming triggers.
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Player command failed: Restricted device","reason":"RESTRICTED_DEVICE"}}"""
+                )
+            )
+
+            val result = sut.enqueue("spotify:track:abc", "device-1")
+
+            assertThat(result).isInstanceOf(Outcome.Error.Unknown::class.java)
+            val message = (result as Outcome.Error.Unknown).message
+            // Both reason and human message land in the description so the
+            // SpotifyUnavailable status line is diagnostic.
+            assertThat(message).contains("RESTRICTED_DEVICE")
+            assertThat(message).contains("Restricted device")
+        }
+
+    @Test fun `enqueue maps 403 NO_ACTIVE_DEVICE reason to NoActiveDevice`() =
+        runTest(mainRule.testScheduler) {
+            // Defensive: /me/player/queue uses 404 for this case today, but
+            // if Spotify ever switches to 403+NO_ACTIVE_DEVICE we map it to
+            // the same Outcome so the orchestrator's RetryLater + status
+            // line stay correct.
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Player command failed: No active device","reason":"NO_ACTIVE_DEVICE"}}"""
+                )
+            )
+
+            val result = sut.enqueue("spotify:track:abc", null)
+
+            assertThat(result).isEqualTo(Outcome.Error.NoActiveDevice)
+        }
+
+    @Test fun `isPremium maps 403 PREMIUM_REQUIRED on slash-me to NotPremium`() =
+        runTest(mainRule.testScheduler) {
+            // Session-start premium check path: the same 403 reason mapping
+            // applies to /me too — confirms the helper is shared, not
+            // duplicated per repository.
+            server.enqueue(
+                MockResponse().setResponseCode(403).setBody(
+                    """{"error":{"status":403,"message":"Premium required","reason":"PREMIUM_REQUIRED"}}"""
+                )
+            )
+
+            val result = sut.isPremium()
+
+            assertThat(result).isEqualTo(Outcome.Error.NotPremium)
+        }
+
+    @Test fun `isPremium maps bare 403 on slash-me to Unknown (not NotPremium)`() =
+        runTest(mainRule.testScheduler) {
+            // The session-start check's "proceed optimistically on Error"
+            // path depends on bare-403 NOT being NotPremium — otherwise
+            // a Spotify-side hiccup at /me would terminate the session
+            // before the first track plays.
+            server.enqueue(MockResponse().setResponseCode(403))
+
+            val result = sut.isPremium()
+
+            assertThat(result).isInstanceOf(Outcome.Error.Unknown::class.java)
+        }
 
     @Test fun `isPremium returns true when product is premium`() =
         runTest(mainRule.testScheduler) {

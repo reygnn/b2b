@@ -72,5 +72,6 @@
     <string name="logs_clear_cd">Clear log</string>
     <string name="logs_copy_cd">Copy log to clipboard</string>
     <string name="logs_copied_toast">Log copied</string>
-    <string name="logs_trace_cd">Toggle debug trace logging</string>
+    <string name="logs_trace_cd_active">Debug trace logging on</string>
+    <string name="logs_trace_cd_inactive">Debug trace logging off</string>
 </resources>

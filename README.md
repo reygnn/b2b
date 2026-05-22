@@ -77,16 +77,18 @@ siehe `FIXES.md`.
    Tokens sind verschlüsselt in `EncryptedSharedPreferences`.
 3. Nav-Graph schaltet automatisch auf `HomeScreen` (gating über
    `TokenStore.authState()`).
-4. **„Manage artists"** öffnet den dedizierten Artists-Screen: Suche
-   (mit 300 ms Debounce) liefert Treffer als Listenzeilen mit „+"-Button
-   zum Hinzufügen. Whitelist-Einträge oben in der Liste haben eine
-   Aktiv-Checkbox (ob der Random-Picker sie aktuell verwendet — Toggle
-   passiert lokal, kein Sync) und ein 🗑-Icon für endgültiges Entfernen
-   mit 5 s Undo-Snackbar. Jede Add-Operation triggert einen One-Shot
-   `PoolSyncWorker` (`KEEP`-Policy → mehrere schnelle Adds coalescen zu
-   einem Lauf). Inaktive Artists behalten ihre Pool-Tracks für ein
-   schnelles Re-Aktivieren; der nächste Sync überspringt sie (kein
-   API-Verbrauch) und der Picker filtert sie via JOIN auf
+4. **„Manage artists"** öffnet den dedizierten Artists-Screen: Suche ist
+   explizit (🔍-Button bzw. IME-Search-Action — Tippen löst keine
+   Spotify-Abfrage aus, ein leeres Feld räumt die letzten Treffer lokal
+   weg). Search-Results haben „+"-Buttons zum Hinzufügen. Whitelist-
+   Einträge oben in der Liste haben eine Aktiv-Checkbox (ob der
+   Random-Picker sie aktuell verwendet — Toggle passiert lokal, kein
+   Sync) und ein 🗑-Icon für endgültiges Entfernen mit 5 s Undo-Snackbar.
+   Jede Add-Operation triggert einen One-Shot `PoolSyncWorker`
+   (`KEEP`-Policy → mehrere schnelle Adds coalescen zu einem Lauf).
+   Inaktive Artists behalten ihre Pool-Tracks für ein schnelles
+   Re-Aktivieren; der nächste Sync überspringt sie (kein API-Verbrauch)
+   und der Picker filtert sie via JOIN auf
    `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` startet als
    Foreground, verbindet sich via App Remote mit der lokalen Spotify-
@@ -252,7 +254,7 @@ app/src/main/java/com/github/reygnn/b2b/
     ├── home/                HomeScreen + ViewModel (Status-Karte,
     │                        Service-Toggle, Skip-Pick, Log-Panel,
     │                        BuildConfig.VERSION_NAME in der TopAppBar)
-    ├── artists/             ArtistsScreen + ViewModel (Search-Debounce,
+    ├── artists/             ArtistsScreen + ViewModel (explizite Suche,
     │                        Aktiv-Checkbox + Trash-mit-Undo für Whitelist-
     │                        Einträge, "+"-Button für Search-Results)
     └── settings/            SettingsScreen + ViewModel (Manual-Sync,

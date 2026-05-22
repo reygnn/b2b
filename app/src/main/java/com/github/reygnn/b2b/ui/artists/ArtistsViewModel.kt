@@ -8,7 +8,6 @@ import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,11 +15,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -57,12 +51,11 @@ data class DeletedArtistSnapshot(val artist: Artist, val tracks: List<Track>)
  * (whitelisted with an active-checkbox + trash, search-results with a plus
  * button); see [ArtistRow].
  *
- * Search is fired via two paths:
- *   - [onQueryChange] from `TextField.onValueChange` runs through a
- *     [SEARCH_DEBOUNCE_MS] debounce so we don't hit Spotify on every
- *     keystroke;
- *   - [submitSearch] from the IME Search action / search button bypasses
- *     the debounce for an immediate hit.
+ * Search is explicit only: typing in the text field never hits Spotify. The
+ * search button (🔍) and the IME Search action call [submitSearch] to fire
+ * the query. The screen still routes blank-edits through [onQueryChange] so
+ * results clear synchronously when the user wipes the field — no network
+ * round-trip is involved on that path.
  *
  * Trash-with-undo: [deleteArtist] snapshots the artist + their pool tracks,
  * removes them from the repo, and exposes the snapshot via
@@ -72,7 +65,6 @@ data class DeletedArtistSnapshot(val artist: Artist, val tracks: List<Track>)
  * possible (the worker's next prune will remove the now-orphan tracks
  * either way).
  */
-@OptIn(FlowPreview::class) // debounce(Long) is still @FlowPreview in coroutines 1.10.2.
 @HiltViewModel
 class ArtistsViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
@@ -99,35 +91,10 @@ class ArtistsViewModel @Inject constructor(
     private val _searchError = MutableStateFlow<String?>(null)
     val searchError: StateFlow<String?> = _searchError.asStateFlow()
 
-    // Drives the debounced search-as-you-type path. The UI writes here via
-    // [onQueryChange] on every TextField change; we collect with a debounce
-    // so only the final value of a typing burst hits the network.
-    private val _queryInput = MutableStateFlow("")
-
-    // Anchor for de-duplicating the debounced search pipeline against the
-    // query that was last actually issued to the repo. See the patched-in
-    // documentation in [runSearch] and the rule table in [shouldResetAnchorOn]
-    // for the reset policy.
-    private var lastSearchedQuery: String? = null
-
     private val _deletedSnapshot = MutableStateFlow<DeletedArtistSnapshot?>(null)
     /** Non-null while the undo snackbar should be visible. */
     val deletedSnapshot: StateFlow<DeletedArtistSnapshot?> = _deletedSnapshot.asStateFlow()
     private var undoTimerJob: Job? = null
-
-    init {
-        _queryInput
-            // Drop the initial "" — `debounce` would otherwise emit it after
-            // the timeout and clobber any submitSearch that fired before.
-            .drop(1)
-            .debounce(SEARCH_DEBOUNCE_MS)
-            // Blank inputs are handled synchronously in onQueryChange (cancel
-            // + state clear, no debounce). The anchor check additionally
-            // drops re-emissions of the most recently searched query.
-            .filter { it.isNotBlank() && it != lastSearchedQuery }
-            .onEach { runSearch(it) }
-            .launchIn(viewModelScope)
-    }
 
     /**
      * Merged display list. Whitelisted rows on top (most recently added
@@ -150,31 +117,31 @@ class ArtistsViewModel @Inject constructor(
 
     private var searchJob: Job? = null
 
-    /** Forward a TextField change. Blank input clears state synchronously. */
+    /**
+     * Forward a TextField change. Only one path uses this: blank-edits clear
+     * the search results synchronously so the list snaps back to the
+     * whitelist-only view when the field is wiped. Non-blank typing is
+     * intentionally ignored — Spotify is only consulted via [submitSearch]
+     * (the 🔍 button / IME Search action).
+     */
     fun onQueryChange(query: String) {
         if (query.isBlank()) {
             searchJob?.cancel()
-            lastSearchedQuery = null
             _searchResults.value = emptyList()
             _isSearching.value = false
             _searchError.value = null
         }
-        _queryInput.value = query
     }
 
-    /** Fire a search immediately, bypassing the debounce. */
+    /** Explicit search: 🔍 button or IME Search action. */
     fun submitSearch(query: String) {
+        searchJob?.cancel()
         if (query.isBlank()) {
-            onQueryChange(query)
+            _searchResults.value = emptyList()
+            _isSearching.value = false
+            _searchError.value = null
             return
         }
-        _queryInput.value = query
-        runSearch(query)
-    }
-
-    private fun runSearch(query: String) {
-        lastSearchedQuery = query
-        searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _isSearching.value = true
             _searchError.value = null
@@ -185,9 +152,6 @@ class ArtistsViewModel @Inject constructor(
                 is Outcome.Error -> {
                     _searchResults.value = emptyList()
                     _searchError.value = describeError(r)
-                    if (shouldResetAnchorOn(r)) {
-                        lastSearchedQuery = null
-                    }
                 }
             }
             _isSearching.value = false
@@ -251,15 +215,6 @@ class ArtistsViewModel @Inject constructor(
         }
     }
 
-    private fun shouldResetAnchorOn(error: Outcome.Error): Boolean = when (error) {
-        is Outcome.Error.Network -> true
-        is Outcome.Error.Unknown -> true
-        is Outcome.Error.RateLimited -> false
-        is Outcome.Error.Unauthenticated -> false
-        is Outcome.Error.NotPremium -> false
-        is Outcome.Error.NoActiveDevice -> false
-    }
-
     private fun describeError(error: Outcome.Error): String = when (error) {
         is Outcome.Error.Network -> "Network error"
         is Outcome.Error.Unauthenticated -> "Session expired — sign in again"
@@ -270,7 +225,6 @@ class ArtistsViewModel @Inject constructor(
     }
 
     private companion object {
-        const val SEARCH_DEBOUNCE_MS = 300L
         const val UNDO_SNACKBAR_MS = 5_000L
     }
 }

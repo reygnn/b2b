@@ -143,43 +143,24 @@ class ArtistsViewModelTest {
             assertThat(sut.isSearching.value).isFalse()
         }
 
-    @Test fun `onQueryChange debounces and fires search after delay`() =
+    @Test fun `onQueryChange does not hit Spotify even after a long wait`() =
         runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("annie") } returns
-                Outcome.Success(emptyList())
-            val sut = newSut()
-            runCurrent()
-
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS - 1)
-            runCurrent()
-            coVerify(exactly = 0) { artistRepo.searchArtists(any()) }
-
-            advanceTimeBy(2)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-        }
-
-    @Test fun `onQueryChange coalesces rapid keystrokes within the debounce window`() =
-        runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists(any()) } returns
-                Outcome.Success(emptyList())
+            // Search is explicit-only: typing never reaches the repo. Pins
+            // the rip-out of the previous 300 ms debounce-on-type pipeline
+            // — the search button and IME action are the sole entry points.
             val sut = newSut()
             runCurrent()
 
             sut.onQueryChange("a")
-            advanceTimeBy(100)
             sut.onQueryChange("an")
-            advanceTimeBy(100)
             sut.onQueryChange("ann")
-            advanceTimeBy(DEBOUNCE_MS + 1)
+            advanceTimeBy(10_000)
             runCurrent()
 
-            coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
-            coVerify(exactly = 1) { artistRepo.searchArtists("ann") }
+            coVerify(exactly = 0) { artistRepo.searchArtists(any()) }
         }
 
-    @Test fun `onQueryChange with blank clears state synchronously without hitting Spotify`() =
+    @Test fun `onQueryChange with blank clears prior results synchronously`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("x") } returns Outcome.Success(
                 listOf(artist("a2", "Found"))
@@ -192,136 +173,46 @@ class ArtistsViewModelTest {
             runCurrent()
             assertThat(sut.displayedArtists.value).hasSize(2)
 
+            // Wiping the field collapses back to the whitelist-only view,
+            // synchronously, without hitting Spotify.
             sut.onQueryChange("")
             assertThat(sut.displayedArtists.value).hasSize(1)
             assertThat(sut.searchError.value).isNull()
             assertThat(sut.isSearching.value).isFalse()
-
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
             coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
         }
 
-    @Test fun `clear then retype identical query fires the search again`() =
+    @Test fun `submitSearch fires the search exactly once per call`() =
         runTest(mainRule.testScheduler) {
             coEvery { artistRepo.searchArtists("annie") } returns
                 Outcome.Success(emptyList())
             val sut = newSut()
             runCurrent()
 
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-
-            sut.onQueryChange("")
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-
-            coVerify(exactly = 2) { artistRepo.searchArtists("annie") }
-        }
-
-    @Test fun `submitSearch consumes a subsequent debounce emit for the same query`() =
-        runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("annie") } returns
-                Outcome.Success(emptyList())
-            val sut = newSut()
-            runCurrent()
-
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS / 2)
             sut.submitSearch("annie")
             runCurrent()
 
             coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
         }
 
-    @Test fun `retyping the same query without clearing does not re-fire the search`() =
+    @Test fun `submitSearch with blank clears state without hitting Spotify`() =
         runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("ann") } returns
-                Outcome.Success(emptyList())
+            // Pins the symmetric clear path on the explicit-submit side too:
+            // a blank submit (e.g. IME Search on an empty field) must not
+            // round-trip to Spotify and must reset the search-state slots.
+            coEvery { artistRepo.searchArtists("x") } returns
+                Outcome.Success(listOf(artist("a2", "Found")))
             val sut = newSut()
+
+            sut.submitSearch("x")
             runCurrent()
+            assertThat(sut.displayedArtists.value).isNotEmpty()
 
-            sut.onQueryChange("ann")
-            advanceTimeBy(DEBOUNCE_MS + 1)
+            sut.submitSearch("")
             runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("ann") }
-
-            sut.onQueryChange("anne")
-            sut.onQueryChange("ann")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-
-            coVerify(exactly = 1) { artistRepo.searchArtists("ann") }
-        }
-
-    @Test fun `transient error resets the anchor so retype same query re-fires`() =
-        runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("annie") } returnsMany listOf(
-                Outcome.Error.Network,
-                Outcome.Success(emptyList()),
-            )
-            val sut = newSut()
-            runCurrent()
-
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-            assertThat(sut.searchError.value).isNotNull()
-
-            sut.onQueryChange("annei")
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-
-            coVerify(exactly = 2) { artistRepo.searchArtists("annie") }
-        }
-
-    @Test fun `rate-limited error does not reset the anchor`() =
-        runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("annie") } returns
-                Outcome.Error.RateLimited(retryAfterSeconds = 30)
-            val sut = newSut()
-            runCurrent()
-
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-
-            sut.onQueryChange("annei")
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-        }
-
-    @Test fun `submitSearch bypasses the anchor for the rate-limited recovery path`() =
-        runTest(mainRule.testScheduler) {
-            coEvery { artistRepo.searchArtists("annie") } returnsMany listOf(
-                Outcome.Error.RateLimited(retryAfterSeconds = 30),
-                Outcome.Success(emptyList()),
-            )
-            val sut = newSut()
-            runCurrent()
-
-            sut.onQueryChange("annie")
-            advanceTimeBy(DEBOUNCE_MS + 1)
-            runCurrent()
-            coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
-
-            sut.submitSearch("annie")
-            runCurrent()
-            coVerify(exactly = 2) { artistRepo.searchArtists("annie") }
-            assertThat(sut.searchError.value).isNull()
+            assertThat(sut.displayedArtists.value).isEmpty()
+            assertThat(sut.isSearching.value).isFalse()
+            coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
         }
 
     // ---- delete-with-undo ----------------------------------------------
@@ -439,7 +330,6 @@ class ArtistsViewModelTest {
     )
 
     private companion object {
-        const val DEBOUNCE_MS = 300L
         const val UNDO_MS = 5_000L
     }
 }

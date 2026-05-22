@@ -59,7 +59,7 @@
     <string name="pool_syncing">Syncing now…</string>
 
     <string name="artists_label">Artists</string>
-    <string name="artists_summary">%1$d / %2$d</string>
+    <string name="artists_summary">%1$d aktiv von %2$d total</string>
 
     <string name="ago_seconds">%1$ds ago</string>
     <string name="ago_minutes">%1$dmin ago</string>

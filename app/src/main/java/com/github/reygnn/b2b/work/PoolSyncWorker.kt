@@ -93,6 +93,10 @@ class PoolSyncWorker @AssistedInject constructor(
         val activeIds = whitelistDao.activeIds()
         log.log("sync: start, ${activeIds.size} active / ${allIds.size} whitelisted")
 
+        // Tracks whether we've already issued an actual fetch this run.
+        // Skipped artists (freshness) don't count — the cooldown only
+        // makes sense between artists that actually hit the API.
+        var hasFetchedThisRun = false
         for (id in activeIds) {
             // Freshness skip: if this artist's slice was already refreshed
             // recently we don't need to re-fetch — Spotify's quota is per
@@ -111,6 +115,18 @@ class PoolSyncWorker @AssistedInject constructor(
                     }
                 }
             }
+            // Inter-artist cooldown: wait long enough that Spotify's 30 s
+            // rate-limit window is empty before we issue the next burst.
+            // The first fetch of the run is exempt — we don't want to
+            // delay the only thing that's about to happen. Force=true
+            // does NOT bypass this: hitting the API rapid-fire would
+            // re-create the very problem the override is meant to recover
+            // from.
+            if (hasFetchedThisRun) {
+                log.log("sync: cooldown ${INTER_ARTIST_DELAY_MS / 1000}s before next artist")
+                delay(INTER_ARTIST_DELAY_MS)
+            }
+            hasFetchedThisRun = true
             log.log("sync: $id fetching…")
             var rateLimitAttempts = 0
             while (true) {
@@ -183,11 +199,12 @@ class PoolSyncWorker @AssistedInject constructor(
 
         private const val MAX_RATE_LIMIT_ATTEMPTS = 3
 
-        // 10 minutes is generous for a few artists with normal-sized
-        // discographies even when Spotify is rate-limiting (each 429
-        // burns up to 30 s). Beyond this it's not throttling — it's
-        // pathology, and we'd rather hand off to WorkManager retry.
-        private val MAX_RUN_DURATION = 10.minutes
+        // Headroom for the inter-artist cooldown: 10 artists × 30 s = 5 min
+        // of pure waiting, plus actual fetch time and possible in-run 429
+        // delays. 15 minutes leaves comfortable slack; beyond this it's
+        // not throttling — it's pathology, and we'd rather hand off to
+        // WorkManager retry.
+        private val MAX_RUN_DURATION = 15.minutes
 
         // Spotifys typical Retry-After is 1–30 s. Real-world we've seen
         // outliers in the tens of thousands of seconds after sustained
@@ -201,5 +218,11 @@ class PoolSyncWorker @AssistedInject constructor(
         // each artist whose slice is still fresh — protecting Spotify's
         // 30 s rate-limit window from the next burst.
         private const val FRESH_THRESHOLD_MS = 18L * 60 * 60 * 1000
+
+        // Wait between artists that actually hit the API. Sized to fully
+        // clear Spotify's 30 s rolling rate-limit window before the next
+        // burst starts, so two artists never share a window. The first
+        // fetch of a run skips this; see [hasFetchedThisRun].
+        private const val INTER_ARTIST_DELAY_MS = 30_000L
     }
 }

@@ -17,12 +17,14 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class PoolSyncWorkerTest {
 
     @get:Rule val mainRule = MainDispatcherRule()
@@ -308,6 +310,63 @@ class PoolSyncWorkerTest {
             build(force = true).doWork()
 
             coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
+    // ---- Inter-artist cooldown -----------------------------------------
+
+    @Test fun `cools down 30s between consecutive artist fetches`() =
+        runTest(mainRule.testScheduler) {
+            // Two artists with stale slices → both fetched; one delay
+            // between them. We assert on virtual time advancing by
+            // INTER_ARTIST_DELAY_MS exactly once.
+            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist(any()) } returns
+                Outcome.Success(emptyList())
+
+            val start = mainRule.testScheduler.currentTime
+            build().doWork()
+            val elapsed = mainRule.testScheduler.currentTime - start
+
+            // 1 inter-artist cooldown of 30 s; the fetches themselves are
+            // mocked instant, so any extra virtual time comes from delays.
+            assertThat(elapsed).isAtLeast(30_000L)
+            assertThat(elapsed).isLessThan(60_000L)
+        }
+
+    @Test fun `does not cool down before the very first artist`() =
+        runTest(mainRule.testScheduler) {
+            // Single-artist run: no cooldown anywhere. Sync should be near-
+            // instant in virtual time.
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(emptyList())
+
+            val start = mainRule.testScheduler.currentTime
+            build().doWork()
+            val elapsed = mainRule.testScheduler.currentTime - start
+
+            assertThat(elapsed).isLessThan(30_000L)
+        }
+
+    @Test fun `skipped artists do not consume a cooldown`() =
+        runTest(mainRule.testScheduler) {
+            // a1 was just synced (freshness-skip), a2 must be fetched.
+            // No cooldown needed: only a2 hit the API, and it's the
+            // first such hit.
+            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
+            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
+                System.currentTimeMillis()
+            coEvery { poolRepo.lastSyncedEpochMsForArtist("a2") } returns null
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
+                Outcome.Success(emptyList())
+
+            val start = mainRule.testScheduler.currentTime
+            build().doWork()
+            val elapsed = mainRule.testScheduler.currentTime - start
+
+            assertThat(elapsed).isLessThan(30_000L)
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a2") }
         }
 
     private fun stubIds(allIds: List<String>, activeIds: List<String>) {

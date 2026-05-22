@@ -2,6 +2,8 @@ package com.github.reygnn.b2b.ui.home
 
 import app.cash.turbine.test
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.data.repository.RateLimitState
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogBuffer
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Track
@@ -35,7 +37,9 @@ class HomeViewModelTest {
     private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val poolSyncObserver: PoolSyncObserver = mockk()
+    private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
     private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
+    private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
     private val serviceState = ServiceState()
     private val statusHolder = OrchestratorStatusHolder()
     private val playerStateHolder = PlayerStateHolder()
@@ -50,6 +54,7 @@ class HomeViewModelTest {
         every { poolRepo.observeLatestSyncEpochMs() } returns MutableStateFlow(null)
         every { poolSyncObserver.observeIsSyncing() } returns MutableStateFlow(false)
         every { artistRepo.observeWhitelist() } returns whitelistFlow
+        every { rateLimitStore.state() } returns rateLimitFlow
     }
 
     @Test fun `toggleService sends Start when service is not running`() =
@@ -198,6 +203,7 @@ class HomeViewModelTest {
         artistRepo = artistRepo,
         poolRepo = poolRepo,
         poolSyncObserver = poolSyncObserver,
+        rateLimitStore = rateLimitStore,
         statusHolder = statusHolder,
         playerStateHolder = playerStateHolder,
         previewHolder = previewHolder,

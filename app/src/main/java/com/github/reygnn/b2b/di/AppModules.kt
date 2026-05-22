@@ -18,6 +18,8 @@ import com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PlaybackRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PoolRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.data.repository.RateLimitStore
+import com.github.reygnn.b2b.data.repository.RateLimitStoreImpl
 import com.github.reygnn.b2b.data.repository.RecentlyPlayedRepositoryImpl
 import com.github.reygnn.b2b.data.repository.WorkManagerPoolSyncObserver
 import com.github.reygnn.b2b.diagnostics.LogBuffer
@@ -146,5 +148,6 @@ abstract class BindsModule {
     @Binds abstract fun bindTokenStore(impl: TokenStoreImpl): TokenStore
     @Binds abstract fun bindPlayerStateSource(impl: AppRemotePlayerStateSource): PlayerStateSource
     @Binds abstract fun bindPoolSyncObserver(impl: WorkManagerPoolSyncObserver): PoolSyncObserver
+    @Binds abstract fun bindRateLimitStore(impl: RateLimitStoreImpl): RateLimitStore
     @Binds abstract fun bindLogSink(impl: LogBuffer): LogSink
 }

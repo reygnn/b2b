@@ -3,6 +3,8 @@ package com.github.reygnn.b2b.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.data.repository.RateLimitState
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogBuffer
 import com.github.reygnn.b2b.diagnostics.LogEntry
 import com.github.reygnn.b2b.domain.model.Track
@@ -38,6 +40,7 @@ class HomeViewModel @Inject constructor(
     artistRepo: ArtistRepository,
     poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
+    rateLimitStore: RateLimitStore,
     statusHolder: OrchestratorStatusHolder,
     playerStateHolder: PlayerStateHolder,
     previewHolder: PreviewTrackHolder,
@@ -80,6 +83,15 @@ class HomeViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = ArtistCounts(0, 0),
         )
+
+    /**
+     * The last rate-limit the worker observed, or `null` if there isn't
+     * one — or if it has already elapsed. The countdown logic lives in
+     * [RateLimitState.remainingSecondsAt], called from the status card
+     * against the ticking `now` clock; this flow only carries the raw
+     * (seconds, recordedAtEpochMs) pair.
+     */
+    val rateLimit: StateFlow<RateLimitState?> = rateLimitStore.state()
 
     val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
     val traceEnabled: StateFlow<Boolean> = logBuffer.traceEnabled

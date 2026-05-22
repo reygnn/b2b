@@ -3,6 +3,7 @@ package com.github.reygnn.b2b.work
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -24,6 +25,7 @@ class PoolSyncWorkerTest {
     private val artistRepo: ArtistRepository = mockk()
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
+    private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
 
     @Test fun `when whitelist empty then succeeds and clears pool`() =
         runTest(mainRule.testScheduler) {
@@ -161,6 +163,48 @@ class PoolSyncWorkerTest {
         assertThat(result).isInstanceOf(ListenableWorker.Result.Failure::class.java)
     }
 
+    // ---- RateLimitStore wiring -----------------------------------------
+
+    @Test fun `successful sync clears any previously recorded rate-limit`() =
+        runTest(mainRule.testScheduler) {
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            build().doWork()
+
+            // Reaching success means Spotify is responsive again; the stored
+            // wait, if any, is stale and must not linger in the status card.
+            coVerify(exactly = 1) { rateLimitStore.clear() }
+        }
+
+    @Test fun `cap-exceeding rate-limit records the announced wait`() =
+        runTest(mainRule.testScheduler) {
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Error.RateLimited(retryAfterSeconds = 56_741)
+
+            build().doWork()
+
+            // The exact value the user wants to see in the status card.
+            coVerify(exactly = 1) { rateLimitStore.record(retryAfterSeconds = 56_741, any()) }
+            // And no spurious clear() from the same run — the wait is the
+            // last word here.
+            coVerify(exactly = 0) { rateLimitStore.clear() }
+        }
+
+    @Test fun `empty whitelist clears the rate-limit`() =
+        runTest(mainRule.testScheduler) {
+            // Mirrors the success path: an empty-whitelist short-circuit is
+            // still a "Spotify is fine" outcome, so any stale wait should
+            // drop out of the UI.
+            coEvery { dao.allIds() } returns emptyList()
+
+            build().doWork()
+
+            coVerify(exactly = 1) { rateLimitStore.clear() }
+        }
+
     private fun stubIds(allIds: List<String>, activeIds: List<String>) {
         coEvery { dao.allIds() } returns allIds
         coEvery { dao.activeIds() } returns activeIds
@@ -173,6 +217,7 @@ class PoolSyncWorkerTest {
         poolRepo = poolRepo,
         whitelistDao = dao,
         log = mockk<LogSink>(relaxed = true),
+        rateLimitStore = rateLimitStore,
     )
 
     private fun track(uri: String, artistId: String) = Track(

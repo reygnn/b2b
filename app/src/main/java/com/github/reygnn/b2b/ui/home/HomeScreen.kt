@@ -47,6 +47,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.github.reygnn.b2b.BuildConfig
 import com.github.reygnn.b2b.R
+import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.diagnostics.LogEntry
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.playback.OrchestratorStatus
@@ -76,6 +77,7 @@ fun HomeScreen(
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
     val artistCounts by vm.artistCounts.collectAsState()
+    val rateLimit by vm.rateLimit.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
     val traceEnabled by vm.traceEnabled.collectAsState()
 
@@ -112,6 +114,7 @@ fun HomeScreen(
                 lastSyncEpochMs = lastSync,
                 isSyncing = isSyncing,
                 artistCounts = artistCounts,
+                rateLimit = rateLimit,
             )
 
             Button(
@@ -280,6 +283,7 @@ private fun StatusCard(
     lastSyncEpochMs: Long?,
     isSyncing: Boolean,
     artistCounts: ArtistCounts,
+    rateLimit: RateLimitState?,
 ) {
     // Tick clock once per second so "Xs ago" labels and the position-line
     // countdown stay live without tearing down the rest of the screen.
@@ -324,8 +328,30 @@ private fun StatusCard(
                     ),
                 style = MaterialTheme.typography.bodyMedium,
             )
+            // Conditional: rendered only while Spotify's announced wait is
+            // still in the future. Once `remainingSecondsAt(now)` ticks down
+            // to 0, the row disappears on its own — the `now` clock above
+            // re-runs this composition every second.
+            if (rateLimit != null) {
+                val remaining = rateLimit.remainingSecondsAt(now)
+                if (remaining > 0) {
+                    Text(
+                        text = "${stringResource(R.string.rate_limit_label)}: " +
+                            formatHhMmSs(remaining),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
         }
     }
+}
+
+private fun formatHhMmSs(totalSeconds: Int): String {
+    val s = totalSeconds.coerceAtLeast(0)
+    val hh = s / 3600
+    val mm = (s % 3600) / 60
+    val ss = s % 60
+    return "%02d:%02d:%02d".format(hh, mm, ss)
 }
 
 @Composable

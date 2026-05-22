@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
@@ -39,6 +40,7 @@ class PoolSyncWorker @AssistedInject constructor(
     private val poolRepo: PoolRepository,
     private val whitelistDao: WhitelistDao,
     private val log: LogSink,
+    private val rateLimitStore: RateLimitStore,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result =
@@ -62,6 +64,7 @@ class PoolSyncWorker @AssistedInject constructor(
         if (allIds.isEmpty()) {
             poolRepo.deleteTracksForRemovedArtists(emptySet())
             log.log("sync: empty whitelist, done")
+            rateLimitStore.clear()
             return Result.success()
         }
         val activeIds = whitelistDao.activeIds()
@@ -92,6 +95,12 @@ class PoolSyncWorker @AssistedInject constructor(
                         // WorkManager's exponential backoff via retry(),
                         // which will try again on a fresh schedule.
                         val wait = tracks.retryAfterSeconds
+                        // Surface the wait to the UI in every rate-limit
+                        // branch (in-run delay, cap-exceed, budget-exceed),
+                        // so the user sees a countdown instead of a silent
+                        // "sync did nothing". The clear() at the success-
+                        // exit below resets it once syncing succeeds.
+                        rateLimitStore.record(wait)
                         if (wait > MAX_RATE_LIMIT_WAIT_SECONDS) {
                             log.log("sync: $id rate-limit ${wait}s exceeds cap, deferring → retry")
                             return Result.retry()
@@ -117,6 +126,10 @@ class PoolSyncWorker @AssistedInject constructor(
 
         poolRepo.deleteTracksForRemovedArtists(allIds.toSet())
         log.log("sync: complete")
+        // The sync got through every active artist without a terminal
+        // rate-limit; any previously recorded wait is now stale (the
+        // ban window has plainly elapsed, or Spotify lifted it).
+        rateLimitStore.clear()
         return Result.success()
     }
 

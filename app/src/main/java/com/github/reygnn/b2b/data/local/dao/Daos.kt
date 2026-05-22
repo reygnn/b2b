@@ -54,6 +54,32 @@ abstract class PoolTrackDao {
     @Query("SELECT COUNT(*) FROM pool_track")
     abstract fun observeCount(): Flow<Int>
 
+    /**
+     * Pool size restricted to tracks whose artist is currently flagged
+     * active in [WhitelistDao]. Mirrors the JOIN used by [random] /
+     * [randomExcluding] so the UI's "Pool: N tracks" matches what the
+     * picker can actually draw from. Tracks belonging to paused or
+     * removed-but-not-yet-pruned artists are intentionally excluded — the
+     * picker won't pick them, so counting them would overstate the pool.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM pool_track pt
+        INNER JOIN whitelisted_artist wa ON pt.artistId = wa.id
+        WHERE wa.isActive = 1
+        """
+    )
+    abstract suspend fun activeTrackCount(): Int
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM pool_track pt
+        INNER JOIN whitelisted_artist wa ON pt.artistId = wa.id
+        WHERE wa.isActive = 1
+        """
+    )
+    abstract fun observeActiveTrackCount(): Flow<Int>
+
     @Query("SELECT MAX(lastSyncedEpochMs) FROM pool_track")
     abstract fun observeLatestSyncEpochMs(): Flow<Long?>
 

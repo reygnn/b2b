@@ -295,9 +295,13 @@ class PoolRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun trackCount(): Int = withContext(io) { dao.count() }
+    // "Pool" in the UI reflects what the picker can actually draw from,
+    // not the raw row count. Tracks belonging to paused (or just-removed
+    // but not yet pruned) artists are filtered out by the JOIN — see
+    // [PoolTrackDao.activeTrackCount] / [PoolTrackDao.observeActiveTrackCount].
+    override suspend fun trackCount(): Int = withContext(io) { dao.activeTrackCount() }
 
-    override fun observeTrackCount(): Flow<Int> = dao.observeCount()
+    override fun observeTrackCount(): Flow<Int> = dao.observeActiveTrackCount()
 
     override fun observeLatestSyncEpochMs(): Flow<Long?> = dao.observeLatestSyncEpochMs()
 

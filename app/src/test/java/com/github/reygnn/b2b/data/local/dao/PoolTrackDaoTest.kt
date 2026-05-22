@@ -175,6 +175,43 @@ class PoolTrackDaoTest {
         assertThat(dao.randomExcluding(listOf("u1"))).isNull()
     }
 
+    // ---- activeTrackCount ---------------------------------------------
+
+    @Test fun `activeTrackCount mirrors random's filter — only active artists count`() = runBlocking {
+        whitelistDao.upsert(whitelistEntry("a1", isActive = true))
+        whitelistDao.upsert(whitelistEntry("a2", isActive = false))
+        // 2 tracks for the active a1, 3 for the paused a2.
+        dao.upsertAll(
+            listOf(
+                track("u1", "a1"), track("u2", "a1"),
+                track("u3", "a2"), track("u4", "a2"), track("u5", "a2"),
+            )
+        )
+
+        // Raw count sees all 5; active count sees only a1's 2.
+        assertThat(dao.count()).isEqualTo(5)
+        assertThat(dao.activeTrackCount()).isEqualTo(2)
+    }
+
+    @Test fun `activeTrackCount returns zero when every artist is inactive`() = runBlocking {
+        whitelistDao.upsert(whitelistEntry("a1", isActive = false))
+        dao.upsertAll(listOf(track("u1", "a1"), track("u2", "a1")))
+
+        // Raw count: 2 rows still in the table. Active count: 0 — the
+        // picker can't draw anything, and the UI should reflect that.
+        assertThat(dao.count()).isEqualTo(2)
+        assertThat(dao.activeTrackCount()).isEqualTo(0)
+    }
+
+    @Test fun `activeTrackCount skips orphan tracks whose whitelist row is gone`() = runBlocking {
+        // Same brief deletion window covered by the random* tests: pool rows
+        // can linger after the whitelist row is gone. The JOIN must hide
+        // them from the count just like it hides them from the picker.
+        dao.upsertAll(listOf(track("u1", "a1")))
+
+        assertThat(dao.activeTrackCount()).isEqualTo(0)
+    }
+
     private fun track(uri: String, artistId: String) = PoolTrackEntity(
         uri = uri,
         name = uri,

@@ -369,6 +369,30 @@ class PoolSyncWorkerTest {
             coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a2") }
         }
 
+    // ---- Per-artist timeout --------------------------------------------
+
+    @Test fun `a slow artist is skipped and the next one proceeds`() =
+        runTest(mainRule.testScheduler) {
+            // a1's fetch hangs forever (suspends past the per-artist
+            // budget). a2 is normal. The worker must skip a1 and
+            // successfully sync a2.
+            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } coAnswers {
+                kotlinx.coroutines.awaitCancellation()
+            }
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
+                Outcome.Success(emptyList())
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            // a2 was reached and its slice was atomically replaced…
+            coVerify(exactly = 1) { poolRepo.replaceTracksForArtist("a2", emptyList()) }
+            // …but a1's pool slice was never touched (stale data wins
+            // over half-applied data).
+            coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(eq("a1"), any()) }
+        }
+
     private fun stubIds(allIds: List<String>, activeIds: List<String>) {
         coEvery { dao.allIds() } returns allIds
         coEvery { dao.activeIds() } returns activeIds

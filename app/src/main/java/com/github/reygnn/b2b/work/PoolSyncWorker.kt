@@ -22,7 +22,7 @@ import kotlin.time.Duration.Companion.minutes
  *
  * Triggers:
  *  - Periodic, every 24h, on UNMETERED network.
- *  - One-shot when the user adds an artist.
+ *  - Manual via the Artists / Settings screen.
  *
  * Rate-limit handling: on 429, honour the Retry-After header in-run via
  * `delay(...)` rather than returning `Result.retry()`. Spotify's rate-limit
@@ -31,6 +31,12 @@ import kotlin.time.Duration.Companion.minutes
  * by-artist progress already accumulated. A per-artist budget caps how
  * many consecutive 429s we wait through; once exceeded, we hand off to
  * WorkManager's backoff via `Result.retry()`.
+ *
+ * Two-tier timeout: each artist gets its own [MAX_PER_ARTIST_DURATION]
+ * budget. A pathologically slow artist therefore can't stall the whole
+ * run — it gets skipped (slice keeps its previous data) and the next
+ * artist takes its turn. [MAX_RUN_DURATION] is the outer safety net for
+ * non-fetch hangs (DB, infinite loops outside the fetch path).
  */
 @HiltWorker
 class PoolSyncWorker @AssistedInject constructor(
@@ -127,56 +133,24 @@ class PoolSyncWorker @AssistedInject constructor(
                 delay(INTER_ARTIST_DELAY_MS)
             }
             hasFetchedThisRun = true
-            log.log("sync: $id fetching…")
-            var rateLimitAttempts = 0
-            while (true) {
-                when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
-                    is Outcome.Success -> {
-                        log.log("sync: $id → ${tracks.value.size} tracks")
-                        // Atomic swap of this artist's slice of the pool.
-                        // The DAO wraps delete + upsert in a single SQLite
-                        // transaction; a worker kill in the middle leaves the
-                        // old slice intact rather than briefly empty (which
-                        // would let a parallel pickNext miss the artist).
-                        poolRepo.replaceTracksForArtist(id, tracks.value)
-                        break
-                    }
-                    is Outcome.Error.RateLimited -> {
-                        // Spotify has been seen returning Retry-After values
-                        // in the tens of thousands (hours) when an account
-                        // hit a hard penalty. Sleeping in-run for that long
-                        // is useless — we'd never wake up before the
-                        // 10-minute worker timeout. Cap: anything above
-                        // MAX_RATE_LIMIT_WAIT_SECONDS hands off to
-                        // WorkManager's exponential backoff via retry(),
-                        // which will try again on a fresh schedule.
-                        val wait = tracks.retryAfterSeconds
-                        // Surface the wait to the UI in every rate-limit
-                        // branch (in-run delay, cap-exceed, budget-exceed),
-                        // so the user sees a countdown instead of a silent
-                        // "sync did nothing". The clear() at the success-
-                        // exit below resets it once syncing succeeds.
-                        rateLimitStore.record(wait)
-                        if (wait > MAX_RATE_LIMIT_WAIT_SECONDS) {
-                            log.log("sync: $id rate-limit ${wait}s exceeds cap, deferring → retry")
-                            return Result.retry()
-                        }
-                        if (++rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
-                            log.log("sync: $id rate-limit budget exceeded → retry")
-                            return Result.retry()
-                        }
-                        log.log("sync: $id rate-limited, sleeping ${wait}s")
-                        delay(wait * 1000L)
-                    }
-                    is Outcome.Error.Network -> {
-                        log.log("sync: $id network error → retry")
-                        return Result.retry()
-                    }
-                    is Outcome.Error -> {
-                        log.log("sync: $id error → failure")
-                        return Result.failure()
-                    }
+
+            // Per-artist budget. A runaway pagination loop (or one
+            // pathological artist) used to risk the entire run via the
+            // outer MAX_RUN_DURATION; now it just costs that artist's
+            // turn. Their pool slice keeps whatever it had — atomic-
+            // replacement only applies on a clean fetch.
+            val outcome = withTimeoutOrNull(MAX_PER_ARTIST_DURATION) {
+                fetchAndStoreArtist(id)
+            }
+            when (outcome) {
+                null -> {
+                    log.log("sync: $id timed out after " +
+                        "${MAX_PER_ARTIST_DURATION.inWholeSeconds}s, skipping")
+                    // continue to next artist
                 }
+                ArtistOutcome.Ok -> Unit
+                ArtistOutcome.Retry -> return Result.retry()
+                ArtistOutcome.Fail -> return Result.failure()
             }
         }
 
@@ -189,6 +163,72 @@ class PoolSyncWorker @AssistedInject constructor(
         return Result.success()
     }
 
+    /**
+     * Fetch [id]'s tracks and atomically swap them into the pool.
+     * Returns a per-artist outcome — the caller decides whether to keep
+     * going, retry the run, or fail. The per-artist [MAX_PER_ARTIST_DURATION]
+     * timeout wraps this call from the outside, so a stuck fetch surfaces
+     * as `withTimeoutOrNull(...) == null` to [runSync].
+     */
+    private suspend fun fetchAndStoreArtist(id: String): ArtistOutcome {
+        log.log("sync: $id fetching…")
+        var rateLimitAttempts = 0
+        while (true) {
+            when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
+                is Outcome.Success -> {
+                    log.log("sync: $id → ${tracks.value.size} tracks")
+                    // Atomic swap of this artist's slice of the pool.
+                    // The DAO wraps delete + upsert in a single SQLite
+                    // transaction; a worker kill in the middle leaves
+                    // the old slice intact rather than briefly empty
+                    // (which would let a parallel pickNext miss the
+                    // artist).
+                    poolRepo.replaceTracksForArtist(id, tracks.value)
+                    return ArtistOutcome.Ok
+                }
+                is Outcome.Error.RateLimited -> {
+                    // Spotify has been seen returning Retry-After values
+                    // in the tens of thousands (hours) when an account
+                    // hit a hard penalty. Sleeping in-run for that long
+                    // is useless. Cap: anything above
+                    // MAX_RATE_LIMIT_WAIT_SECONDS hands off to WorkManager's
+                    // exponential backoff via retry().
+                    val wait = tracks.retryAfterSeconds
+                    // Surface the wait to the UI in every rate-limit
+                    // branch (in-run delay, cap-exceed, budget-exceed),
+                    // so the user sees a countdown instead of a silent
+                    // "sync did nothing". The clear() at runSync's
+                    // success-exit resets it once syncing succeeds.
+                    rateLimitStore.record(wait)
+                    if (wait > MAX_RATE_LIMIT_WAIT_SECONDS) {
+                        log.log("sync: $id rate-limit ${wait}s exceeds cap, deferring → retry")
+                        return ArtistOutcome.Retry
+                    }
+                    if (++rateLimitAttempts >= MAX_RATE_LIMIT_ATTEMPTS) {
+                        log.log("sync: $id rate-limit budget exceeded → retry")
+                        return ArtistOutcome.Retry
+                    }
+                    log.log("sync: $id rate-limited, sleeping ${wait}s")
+                    delay(wait * 1000L)
+                }
+                is Outcome.Error.Network -> {
+                    log.log("sync: $id network error → retry")
+                    return ArtistOutcome.Retry
+                }
+                is Outcome.Error -> {
+                    log.log("sync: $id error → failure")
+                    return ArtistOutcome.Fail
+                }
+            }
+        }
+    }
+
+    private sealed interface ArtistOutcome {
+        object Ok : ArtistOutcome
+        object Retry : ArtistOutcome
+        object Fail : ArtistOutcome
+    }
+
     companion object {
         /**
          * Input-data key for forcing a sync past the rate-limit skip
@@ -199,12 +239,19 @@ class PoolSyncWorker @AssistedInject constructor(
 
         private const val MAX_RATE_LIMIT_ATTEMPTS = 3
 
-        // Headroom for the inter-artist cooldown: 10 artists × 30 s = 5 min
-        // of pure waiting, plus actual fetch time and possible in-run 429
-        // delays. 15 minutes leaves comfortable slack; beyond this it's
-        // not throttling — it's pathology, and we'd rather hand off to
-        // WorkManager retry.
-        private val MAX_RUN_DURATION = 15.minutes
+        // Per-artist budget. Generous enough for a normal Spotify
+        // discography (a few seconds of API + the in-run 429 delays
+        // capped at MAX_RATE_LIMIT_WAIT_SECONDS × MAX_RATE_LIMIT_ATTEMPTS),
+        // but well short of "this artist is broken, move on". The whole
+        // point is that this scales with the number of artists, not the
+        // size of the worst one — see [MAX_RUN_DURATION].
+        private val MAX_PER_ARTIST_DURATION = 2.minutes
+
+        // Outer safety net for non-fetch hangs (DB stall, infinite loop
+        // outside the artist fetch path). With per-artist budgeting
+        // doing the heavy lifting, this should never fire in practice;
+        // 30 minutes is the "obviously something is wrong" upper bound.
+        private val MAX_RUN_DURATION = 30.minutes
 
         // Spotifys typical Retry-After is 1–30 s. Real-world we've seen
         // outliers in the tens of thousands of seconds after sustained

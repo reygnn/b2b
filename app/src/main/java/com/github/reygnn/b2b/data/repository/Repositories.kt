@@ -139,7 +139,6 @@ class ArtistRepositoryImpl @Inject constructor(
     private val api: SpotifyApi,
     private val dao: WhitelistDao,
     private val poolRepo: PoolRepository,
-    private val poolSyncTrigger: PoolSyncTrigger,
     @param:IoDispatcher private val io: CoroutineDispatcher,
 ) : ArtistRepository {
 
@@ -164,6 +163,11 @@ class ArtistRepositoryImpl @Inject constructor(
         // Setting it here means a re-add of a previously-inactive artist
         // resets to active — that matches the user gesture (they tapped
         // the plus button, they want the artist used).
+        //
+        // No sync is fired here. Auto-sync after each add ran the user into
+        // Spotify rate limits when several artists were added in quick
+        // succession; pool population is now driven by the explicit
+        // "Sync now" button (Artists / Settings) and the 24 h periodic.
         dao.upsert(
             WhitelistedArtistEntity(
                 id = artist.id,
@@ -173,7 +177,6 @@ class ArtistRepositoryImpl @Inject constructor(
                 isActive = true,
             )
         )
-        poolSyncTrigger.triggerAfterWhitelistChange()
     }
 
     override suspend fun setActive(artistId: String, isActive: Boolean) = withContext(io) {

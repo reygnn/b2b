@@ -35,7 +35,6 @@ class ArtistRepositoryImplTest {
     private lateinit var api: SpotifyApi
     private val dao: WhitelistDao = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
-    private val poolSyncTrigger: PoolSyncTrigger = mockk(relaxUnitFun = true)
     private lateinit var sut: ArtistRepositoryImpl
 
     @Before fun setUp() {
@@ -47,7 +46,7 @@ class ArtistRepositoryImplTest {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(SpotifyApi::class.java)
-        sut = ArtistRepositoryImpl(api, dao, poolRepo, poolSyncTrigger, mainRule.testDispatcher)
+        sut = ArtistRepositoryImpl(api, dao, poolRepo, mainRule.testDispatcher)
     }
 
     @After fun tearDown() { server.shutdown() }
@@ -253,7 +252,7 @@ class ArtistRepositoryImplTest {
             assertThat(server.requestCount).isEqualTo(2)
         }
 
-    @Test fun `addToWhitelist persists entity and triggers one-shot sync`() =
+    @Test fun `addToWhitelist persists entity without firing a sync`() =
         runTest(mainRule.testScheduler) {
             val captured = slot<WhitelistedArtistEntity>()
             coEvery { dao.upsert(capture(captured)) } just Runs
@@ -264,10 +263,11 @@ class ArtistRepositoryImplTest {
             assertThat(captured.captured.name).isEqualTo("Artist")
             assertThat(captured.captured.imageUrl).isEqualTo("http://img")
             assertThat(captured.captured.addedAtEpochMs).isGreaterThan(0)
-            coVerify(exactly = 1) { poolSyncTrigger.triggerAfterWhitelistChange() }
+            // Add MUST NOT auto-trigger a worker. The user pulls the trigger
+            // via the "Sync now" button in the Artists / Settings screen.
         }
 
-    @Test fun `removeFromWhitelist delegates to DAO, prunes pool, does not trigger sync`() =
+    @Test fun `removeFromWhitelist delegates to DAO and prunes pool`() =
         runTest(mainRule.testScheduler) {
             sut.removeFromWhitelist("art1")
 
@@ -276,6 +276,5 @@ class ArtistRepositoryImplTest {
             // a stale track from the removed artist before the 24 h
             // periodic sync runs.
             coVerify(exactly = 1) { poolRepo.deleteTracksForArtist("art1") }
-            coVerify(exactly = 0) { poolSyncTrigger.triggerAfterWhitelistChange() }
         }
 }

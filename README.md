@@ -235,7 +235,7 @@ app/src/main/java/com/github/reygnn/b2b/
 │   │                        DTOs, AuthInterceptor
 │   ├── local/               Room (Entities, DAOs, AppDatabase)
 │   ├── auth/                PKCE + TokenStore + AuthEventBus
-│   └── repository/          Impls + PoolSyncTrigger/Observer
+│   └── repository/          Impls + PoolSyncObserver
 ├── work/                    PoolSyncWorker + PoolSyncWorkNames
 ├── service/                 PlaybackOrchestratorService + ServiceState
 ├── playback/                PlaybackOrchestrator (pure logic, position-

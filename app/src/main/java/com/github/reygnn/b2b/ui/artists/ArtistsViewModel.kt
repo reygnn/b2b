@@ -1,22 +1,37 @@
 package com.github.reygnn.b2b.ui.artists
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.BackoffPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.github.reygnn.b2b.R
+import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
+import com.github.reygnn.b2b.work.PoolSyncWorkNames
+import com.github.reygnn.b2b.work.PoolSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 /**
@@ -67,9 +82,29 @@ data class DeletedArtistSnapshot(val artist: Artist, val tracks: List<Track>)
  */
 @HiltViewModel
 class ArtistsViewModel @Inject constructor(
+    @param:ApplicationContext private val context: Context,
     private val artistRepo: ArtistRepository,
     private val poolRepo: PoolRepository,
+    poolSyncObserver: PoolSyncObserver,
 ) : ViewModel() {
+
+    /**
+     * Mirrors the home screen's sync indicator so the user can see whether
+     * a "Sync now" tap is still in flight (and to disable the button while
+     * it is). The "Cancel running sync" affordance lives in Settings — we
+     * don't duplicate it on this screen.
+     */
+    val isSyncing: StateFlow<Boolean> = poolSyncObserver.observeIsSyncing().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = false,
+    )
+
+    private val _toastEvents = Channel<Int>(
+        capacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val toastEvents: Flow<Int> = _toastEvents.receiveAsFlow()
 
     // Eagerly collected so the combined `displayedArtists` always has a
     // current value as soon as the VM is created — important for the
@@ -161,6 +196,27 @@ class ArtistsViewModel @Inject constructor(
     /** Search-result row "+" button: add as active. */
     fun addToWhitelist(artist: Artist) {
         viewModelScope.launch { artistRepo.addToWhitelist(artist) }
+    }
+
+    /**
+     * "Sync now" button. Mirrors the manual-sync action in Settings so the
+     * user can fill the pool right after adding artists without leaving
+     * this screen. Adds no longer auto-trigger a sync (rate-limit risk
+     * during multi-artist sessions); this is the explicit replacement.
+     *
+     * Uses [ExistingWorkPolicy.REPLACE] under the [PoolSyncWorkNames.MANUAL]
+     * lane so a stuck in-flight run is superseded immediately.
+     */
+    fun manualSync() {
+        val request = OneTimeWorkRequestBuilder<PoolSyncWorker>()
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            PoolSyncWorkNames.MANUAL,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+        _toastEvents.trySend(R.string.sync_enqueued)
     }
 
     /** Whitelist-row checkbox: toggle whether the random picker uses this artist. */

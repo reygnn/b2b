@@ -156,8 +156,10 @@ class ArtistsViewModelTest {
     @Test fun `onQueryChange coalesces rapid keystrokes within the debounce window`() =
         runTest(mainRule.testScheduler) {
             // Rapid typing emits N values within the debounce window. The
-            // debounce + distinctUntilChanged pair must collapse them down to
-            // exactly one hit on Spotify, with the final value as the query.
+            // debounce alone must collapse them down to exactly one hit on
+            // Spotify, with the final value as the query (the VM uses the
+            // explicit lastSearchedQuery anchor instead of
+            // distinctUntilChanged — see the VM for the rationale).
             coEvery { artistRepo.searchArtists(any()) } returns
                 Outcome.Success(emptyList())
             val sut = newSut()

@@ -75,6 +75,7 @@ fun HomeScreen(
     val poolCount by vm.poolTrackCount.collectAsState()
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
+    val artistCounts by vm.artistCounts.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
     val traceEnabled by vm.traceEnabled.collectAsState()
 
@@ -110,6 +111,7 @@ fun HomeScreen(
                 poolCount = poolCount,
                 lastSyncEpochMs = lastSync,
                 isSyncing = isSyncing,
+                artistCounts = artistCounts,
             )
 
             Button(
@@ -277,6 +279,7 @@ private fun StatusCard(
     poolCount: Int,
     lastSyncEpochMs: Long?,
     isSyncing: Boolean,
+    artistCounts: ArtistCounts,
 ) {
     // Tick clock once per second so "Xs ago" labels and the position-line
     // countdown stay live without tearing down the rest of the screen.
@@ -310,6 +313,15 @@ private fun StatusCard(
             Text(
                 text = "${stringResource(R.string.pool_label)}: " +
                     poolLine(poolCount, lastSyncEpochMs, isSyncing, now),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "${stringResource(R.string.artists_label)}: " +
+                    stringResource(
+                        R.string.artists_summary,
+                        artistCounts.active,
+                        artistCounts.total,
+                    ),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }

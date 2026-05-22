@@ -3,7 +3,9 @@ package com.github.reygnn.b2b.ui.home
 import app.cash.turbine.test
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.diagnostics.LogBuffer
+import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Track
+import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.playback.OrchestratorStatus
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
@@ -30,8 +32,10 @@ class HomeViewModelTest {
 
     @get:Rule val mainRule = MainDispatcherRule()
 
+    private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val poolSyncObserver: PoolSyncObserver = mockk()
+    private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
     private val serviceState = ServiceState()
     private val statusHolder = OrchestratorStatusHolder()
     private val playerStateHolder = PlayerStateHolder()
@@ -45,6 +49,7 @@ class HomeViewModelTest {
         every { poolRepo.observeTrackCount() } returns MutableStateFlow(0)
         every { poolRepo.observeLatestSyncEpochMs() } returns MutableStateFlow(null)
         every { poolSyncObserver.observeIsSyncing() } returns MutableStateFlow(false)
+        every { artistRepo.observeWhitelist() } returns whitelistFlow
     }
 
     @Test fun `toggleService sends Start when service is not running`() =
@@ -116,6 +121,33 @@ class HomeViewModelTest {
             }
         }
 
+    @Test fun `artistCounts derives active and total from the whitelist`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            sut.artistCounts.test {
+                // Empty whitelist → 0 / 0.
+                assertThat(awaitItem()).isEqualTo(ArtistCounts(active = 0, total = 0))
+
+                // Two active, one paused: total = 3, active = 2.
+                whitelistFlow.value = listOf(
+                    Artist(id = "a1", name = "A1", isActive = true),
+                    Artist(id = "a2", name = "A2", isActive = true),
+                    Artist(id = "a3", name = "A3", isActive = false),
+                )
+                assertThat(awaitItem()).isEqualTo(ArtistCounts(active = 2, total = 3))
+
+                // Pause one more — active drops, total stays.
+                whitelistFlow.value = listOf(
+                    Artist(id = "a1", name = "A1", isActive = true),
+                    Artist(id = "a2", name = "A2", isActive = false),
+                    Artist(id = "a3", name = "A3", isActive = false),
+                )
+                assertThat(awaitItem()).isEqualTo(ArtistCounts(active = 1, total = 3))
+
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
     @Test fun `nextPick reflects the PreviewTrackHolder`() =
         runTest(mainRule.testScheduler) {
             val sut = newSut()
@@ -163,6 +195,7 @@ class HomeViewModelTest {
     private fun newSut() = HomeViewModel(
         orchestrator = orchestrator,
         logBuffer = logBuffer,
+        artistRepo = artistRepo,
         poolRepo = poolRepo,
         poolSyncObserver = poolSyncObserver,
         statusHolder = statusHolder,

@@ -6,6 +6,7 @@ import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.diagnostics.LogBuffer
 import com.github.reygnn.b2b.diagnostics.LogEntry
 import com.github.reygnn.b2b.domain.model.Track
+import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import com.github.reygnn.b2b.playback.OrchestratorStatusHolder
 import com.github.reygnn.b2b.playback.OrchestratorStatusSnapshot
@@ -20,6 +21,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -33,6 +35,7 @@ import javax.inject.Inject
 class HomeViewModel @Inject constructor(
     private val orchestrator: PlaybackOrchestrator,
     private val logBuffer: LogBuffer,
+    artistRepo: ArtistRepository,
     poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
     statusHolder: OrchestratorStatusHolder,
@@ -62,6 +65,22 @@ class HomeViewModel @Inject constructor(
         initialValue = false,
     )
 
+    /**
+     * Active / total whitelisted artists, shown on the status card so the
+     * user can see at a glance how much of the whitelist is currently
+     * participating in the random picker (paused artists are still in the
+     * list but won't be drawn from — see [Artist.isActive]). Derived from
+     * the existing [ArtistRepository.observeWhitelist] flow rather than a
+     * dedicated DAO query: the whitelist is small and already collected.
+     */
+    val artistCounts: StateFlow<ArtistCounts> = artistRepo.observeWhitelist()
+        .map { list -> ArtistCounts(active = list.count { it.isActive }, total = list.size) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = ArtistCounts(0, 0),
+        )
+
     val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
     val traceEnabled: StateFlow<Boolean> = logBuffer.traceEnabled
 
@@ -86,3 +105,5 @@ class HomeViewModel @Inject constructor(
 }
 
 enum class ServiceCommand { Start, Stop }
+
+data class ArtistCounts(val active: Int, val total: Int)

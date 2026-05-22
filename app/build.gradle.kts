@@ -17,8 +17,8 @@ android {
         applicationId = "com.github.reygnn.b2b"
         minSdk = 36                 // Android 16 only
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.5.2"
+        versionCode = 33
+        versionName = "0.5.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

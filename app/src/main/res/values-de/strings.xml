@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">B2B</string>
+    <string name="playback_channel_name">Wiedergabe-Orchestrator</string>
+    <string name="playback_channel_description">Hält die Queue mit Whitelist-Artists gefüllt</string>
+    <string name="notif_idle_no_device">Spotify öffnen, um Session zu starten</string>
+    <string name="notif_running">Hält Spotify auf deinen Artists</string>
+    <string name="notif_free_tier">Spotify Premium für Queue-Steuerung benötigt</string>
+    <string name="notif_spotify_unavailable">Spotify: %1$s</string>
+
+    <!-- Login -->
+    <string name="login_title">Mit Spotify anmelden</string>
+    <string name="login_blurb">B2B hält deine Spotify-Queue mit Tracks von Artists gefüllt, die du wirklich hören willst. Melde dich an, um loszulegen.</string>
+    <string name="login_button">Mit Spotify anmelden</string>
+    <string name="login_error">Login fehlgeschlagen: %1$s</string>
+
+    <!-- Home -->
+    <string name="home_title">B2B</string>
+    <string name="home_manage_artists">Artists verwalten</string>
+    <string name="service_start">Session starten</string>
+    <string name="service_stop">Session stoppen</string>
+    <string name="service_running">Session läuft</string>
+
+    <!-- Artists -->
+    <string name="artists_title">Artists</string>
+    <string name="artists_search_label">Artists suchen</string>
+    <string name="artists_back">Zurück</string>
+    <string name="artists_active_cd_on">Aktiv für Random-Pick — tippen zum Pausieren</string>
+    <string name="artists_active_cd_off">Pausiert — tippen zum Verwenden für Random-Pick</string>
+    <string name="artists_delete_cd">%1$s von der Whitelist entfernen</string>
+    <string name="artists_add_cd">%1$s zur Whitelist hinzufügen</string>
+    <string name="artists_deleted_snackbar">%1$s entfernt</string>
+    <string name="artists_undo">Rückgängig</string>
+
+    <!-- Status card -->
+    <string name="next_label">Nächster</string>
+    <string name="next_pick">%1$s — %2$s</string>
+    <string name="skip_next_glyph">↻</string>
+    <string name="skip_next_content_description">Nächsten Pick überspringen</string>
+
+    <string name="status_label">Status</string>
+    <string name="status_idle">Nicht gestartet</string>
+    <string name="status_running">Warte auf Spotify…</string>
+    <string name="status_listening">Aktuell: %1$s — %2$s</string>
+    <string name="status_enqueued">Zuletzt eingereiht: %1$s — %2$s</string>
+    <string name="status_no_device">Kein aktives Spotify-Device</string>
+    <string name="status_free_tier">Spotify Premium erforderlich</string>
+    <string name="status_spotify_unavailable">Spotify: %1$s</string>
+
+    <string name="track_position">Track: %1$s / %2$s · %3$s</string>
+    <string name="next_push_in">Nächster Push in %1$s</string>
+    <string name="push_window">Push-Fenster</string>
+    <string name="track_paused">Pausiert</string>
+
+    <string name="pool_label">Pool</string>
+    <string name="pool_empty">Leer — füge einen Artist hinzu</string>
+    <string name="pool_summary">%1$d Tracks · letzter Sync %2$s</string>
+    <string name="pool_summary_never">%1$d Tracks · nie synchronisiert</string>
+    <string name="pool_syncing">Synchronisiert gerade…</string>
+
+    <string name="artists_label">Artists</string>
+    <string name="artists_summary">%1$d aktiv von %2$d total</string>
+    <string name="rate_limit_label">Rate-Limit</string>
+    <string name="sync_blocked_rate_limit">Sync gesperrt — Rate-Limit aktiv</string>
+    <string name="rate_limit_dialog_title">Rate-Limit aktiv</string>
+    <string name="rate_limit_dialog_text">Spotify hat eine Wartezeit von %1$s angekündigt. Ein Sync jetzt kann die Strafe verlängern. Trotzdem syncen?</string>
+    <string name="rate_limit_dialog_force">Trotzdem syncen</string>
+    <string name="rate_limit_dialog_cancel">Abbrechen</string>
+
+    <string name="ago_seconds">vor %1$ds</string>
+    <string name="ago_minutes">vor %1$dmin</string>
+    <string name="ago_hours">vor %1$dh</string>
+    <string name="ago_days">vor %1$dd</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Einstellungen</string>
+    <string name="settings_logout">Abmelden</string>
+    <string name="settings_manual_sync">Pool jetzt synchronisieren</string>
+    <string name="settings_cancel_sync">Laufende Synchronisierung abbrechen</string>
+    <string name="settings_back">Zurück</string>
+    <string name="sync_enqueued">Sync eingereiht</string>
+    <string name="sync_cancelled">Sync abgebrochen</string>
+
+    <!-- Logs -->
+    <string name="logs_title">Logs</string>
+    <string name="logs_empty">Noch keine Log-Einträge.</string>
+    <string name="logs_clear_cd">Log leeren</string>
+    <string name="logs_copy_cd">Log in die Zwischenablage kopieren</string>
+    <string name="logs_copied_toast">Log kopiert</string>
+    <string name="logs_trace_cd_active">Debug-Trace-Logging an</string>
+    <string name="logs_trace_cd_inactive">Debug-Trace-Logging aus</string>
+</resources>

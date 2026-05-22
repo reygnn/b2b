@@ -26,7 +26,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -182,24 +181,23 @@ private fun LogPanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Trace toggle. When on, the orchestrator and repository
                 // emit high-frequency diagnostic lines (state/arm/cancel/
-                // fire/http). Off by default; opt-in is the point of the
-                // 🐛 icon — chronic state-dump traffic crowds the buffer
-                // and isn't useful for normal sessions.
+                // fire/http). Off by default; the buffer would otherwise be
+                // crowded with state-dump traffic that isn't useful for
+                // normal sessions.
                 //
-                // Visual state: a strike-through on the 🐛 glyph when the
-                // toggle is off makes the current trace state legible at a
-                // glance (without it, the IconToggleButton's checked/
-                // unchecked background is too subtle on a small phone
-                // screen for a single-character emoji to read clearly).
+                // Visual state: two distinct glyphs (📝 normal log /
+                // 🐛 trace on). The IconToggleButton's own checked/
+                // unchecked background is too subtle for a single-character
+                // emoji to read clearly on a phone screen, so the glyph
+                // itself carries the state.
                 IconToggleButton(
                     checked = traceEnabled,
                     onCheckedChange = onSetTraceEnabled,
                     modifier = Modifier.semantics { contentDescription = traceContentDescription },
                 ) {
                     Text(
-                        text = "🐛",
+                        text = if (traceEnabled) "🐛" else "📝",
                         style = MaterialTheme.typography.titleMedium,
-                        textDecoration = if (traceEnabled) null else TextDecoration.LineThrough,
                     )
                 }
                 IconButton(

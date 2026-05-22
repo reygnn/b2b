@@ -8,15 +8,16 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**Real-Device-validiert, Version 0.4.1 (versionCode 29).** End-to-End-Push
+**Real-Device-validiert, Version 0.5.5 (versionCode 35).** End-to-End-Push
 beobachtet: Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b
 den nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
-gegen `accounts.spotify.com`, Periodic + One-Shot + Manual `PoolSyncWorker`,
+gegen `accounts.spotify.com`, Periodic + Manual `PoolSyncWorker` mit
+persistenter Rate-Limit-Awareness (kein Sync während Spotify-Strafe läuft),
 Compose-UI (Login → Whitelist → Artists → Settings) mit Status-Karte,
-Track-Position-Countdown, Skip-Button für den Vorschau-Pick, debounced
+Track-Position-Countdown, Skip-Button für den Vorschau-Pick, explizite
 Artist-Suche und 500-Zeilen-Log-Panel. App-Remote-SDK-Integration via
 `AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-Dynamic-
-Color folgt System-Dark-Mode. Suite: 135 Unit-Tests (JUnit + MockK +
+Color folgt System-Dark-Mode. Suite: 144 Unit-Tests (JUnit + MockK +
 Turbine + MockWebServer + Robolectric). Build clean, keine Warnings.
 
 Architektur-Details siehe Abschnitt „Architektur" unten; Personal-App-
@@ -84,12 +85,16 @@ siehe `FIXES.md`.
    Einträge oben in der Liste haben eine Aktiv-Checkbox (ob der
    Random-Picker sie aktuell verwendet — Toggle passiert lokal, kein
    Sync) und ein 🗑-Icon für endgültiges Entfernen mit 5 s Undo-Snackbar.
-   Jede Add-Operation triggert einen One-Shot `PoolSyncWorker`
-   (`KEEP`-Policy → mehrere schnelle Adds coalescen zu einem Lauf).
-   Inaktive Artists behalten ihre Pool-Tracks für ein schnelles
-   Re-Aktivieren; der nächste Sync überspringt sie (kein API-Verbrauch)
-   und der Picker filtert sie via JOIN auf
-   `whitelisted_artist.isActive = 1`.
+   Adds triggern **keinen** automatischen Sync mehr (das lief vorher in
+   Spotify-Rate-Limits, wenn man mehrere Artists schnell hintereinander
+   hinzufügte). Stattdessen sitzt auf dem Artists-Screen ein expliziter
+   **„Sync now"**-Button; der periodische 24-h-Worker greift sowieso.
+   Während eines aktiven Spotify-Rate-Limits ist der Button hart
+   disabled (Label „Sync gesperrt — Rate-Limit aktiv") — die Override-
+   Option lebt im Settings-Screen, hinter einem Warn-Dialog. Inaktive
+   Artists behalten ihre Pool-Tracks für ein schnelles Re-Aktivieren;
+   der nächste Sync überspringt sie (kein API-Verbrauch) und der Picker
+   filtert sie via JOIN auf `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` startet als
    Foreground, verbindet sich via App Remote mit der lokalen Spotify-
    Instanz, beobachtet `PlayerState`. Position-basierter Timer:
@@ -106,16 +111,30 @@ siehe `FIXES.md`.
      letzten SDK-Event extrapoliert (1 Hz Tick), Countdown bis
      Trigger.
    - `Pool: N tracks · last sync 3h ago` bzw. `Syncing now…` während
-     ein `PoolSyncWorker` läuft.
+     ein `PoolSyncWorker` läuft. `N` zählt nur Tracks aktiver Artists
+     (gleiche JOIN-Semantik wie der Picker — pausierte Artists tragen
+     nicht zur Anzeige bei, auch wenn ihre Tracks noch in der DB
+     liegen).
+   - `Artists: X aktiv von Y total` — die Whitelist in der Übersicht.
+   - `Rate-Limit: HH:MM:SS` — nur sichtbar, wenn Spotify dem
+     `PoolSyncWorker` eine Wartezeit angekündigt hat und der Countdown
+     noch läuft. Tickt jede Sekunde, verschwindet automatisch bei 0,
+     und überlebt App-Restart (SharedPreferences-persistierter
+     `RateLimitStore`).
 7. **Log-Panel** unterhalb der Status-Karte: 500-Zeilen-Ring-Buffer
    (`LogBuffer`) mit `HH:mm:ss  message` pro Eintrag, reverseLayout
    (neuestes oben). Reicht für „was ist gerade gelaufen?"-Diagnose
    ohne adb-logcat. Buffer wird beim Prozess-Tod gewiped — er ist
    bewusst kein Persistenz-Mechanismus.
-8. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane),
-   "Cancel running sync" (Notausgang falls ein Worker hängt — ruft
-   `WorkManager.cancelUniqueWork` auf alle drei Lanes), "Sign out"
-   (`TokenStore.clear()` → Nav-Graph routet zurück zu Login).
+8. Settings: "Sync pool now" (REPLACE-Policy, eigene unique-work-Lane).
+   Wenn ein Spotify-Rate-Limit noch läuft, öffnet der Klick zuerst einen
+   Warn-Dialog mit der Restzeit und einem „Trotzdem syncen"-Button, der
+   den Worker via `inputData.force=true` an seinem Rate-Limit-Skip
+   vorbei feuert — bewusst ausgelegt als die einzige Override-Option,
+   damit ein versehentlicher Klick die Spotify-Strafe nicht verlängert.
+   "Cancel running sync" ist der Notausgang falls ein Worker hängt
+   (ruft `WorkManager.cancelUniqueWork` auf alle Lanes). "Sign out"
+   ruft `TokenStore.clear()` und der Nav-Graph routet zurück zu Login.
 
 ## Architektur
 
@@ -142,7 +161,14 @@ layer boundaries.
 Hintergrund:
 
 - `PoolSyncWorker` (WorkManager): periodisch alle 24 h auf UNMETERED
-  Network, One-Shot nach Whitelist-Add, Manual via Settings. Walks die
+  Network, plus Manual aus Artists- und Settings-Screen. Auto-Sync nach
+  Whitelist-Add ist bewusst weg — schnelle Adds rannten in
+  Spotify-Rate-Limits. Beim Eintritt prüft der Worker den
+  `RateLimitStore`: wenn Spotify eine Wartezeit angekündigt hat und der
+  Countdown noch läuft, exit mit `Result.success()` ohne API-Aufruf
+  (eine erneute Anfrage könnte als Hämmern interpretiert werden und die
+  Strafe verlängern). Die Settings-Override-Lane setzt
+  `inputData.force=true` und überspringt diese Check. Walks die
   Whitelist → `/artists/{id}/albums` → `/albums/{id}/tracks`, filtert
   Tracks ohne den angefragten Artist aus (Compilations / Various-
   Artists-Releases liefern sonst Fremd-Tracks). Pro Artist wird der
@@ -155,8 +181,11 @@ Hintergrund:
   Responses). 10-min-Worker-Timeout als letzte Verteidigungslinie.
   Bei HTTP 429 mit Retry-After ≤ 120 s wird in-run `delay()`-gewartet
   (max 3 Versuche pro Artist); größere Werte werden an WorkManager-
-  Backoff (5-min EXPONENTIAL initial, max 5 h) übergeben, damit wir
-  Spotify nicht weiter hämmern und eine bestehende Penalty verlängern.
+  Backoff (5-min EXPONENTIAL initial, max 5 h) übergeben. In jedem
+  Rate-Limit-Pfad schreibt der Worker `(retryAfterSeconds, jetzt)` in
+  den `RateLimitStore`, damit die Home-Status-Karte einen Live-
+  Countdown rendern kann; bei erfolgreichem Sync-Ende cleart er den
+  Store.
 - `PlaybackOrchestratorService` (Foreground, `mediaPlayback`): hostet
   den `PlaybackOrchestrator` (pure Kotlin, testbar ohne Android), der
   einen `Flow<PlayerState>` aus `PlayerStateSource` konsumiert und
@@ -235,7 +264,8 @@ app/src/main/java/com/github/reygnn/b2b/
 │   │                        DTOs, AuthInterceptor
 │   ├── local/               Room (Entities, DAOs, AppDatabase)
 │   ├── auth/                PKCE + TokenStore + AuthEventBus
-│   └── repository/          Impls + PoolSyncObserver
+│   └── repository/          Impls + PoolSyncObserver + RateLimitStore
+│                            (SharedPreferences-persistiert)
 ├── work/                    PoolSyncWorker + PoolSyncWorkNames
 ├── service/                 PlaybackOrchestratorService + ServiceState
 ├── playback/                PlaybackOrchestrator (pure logic, position-
@@ -256,9 +286,11 @@ app/src/main/java/com/github/reygnn/b2b/
     │                        BuildConfig.VERSION_NAME in der TopAppBar)
     ├── artists/             ArtistsScreen + ViewModel (explizite Suche,
     │                        Aktiv-Checkbox + Trash-mit-Undo für Whitelist-
-    │                        Einträge, "+"-Button für Search-Results)
-    └── settings/            SettingsScreen + ViewModel (Manual-Sync,
-                             Cancel-Sync, Logout)
+    │                        Einträge, "+"-Button für Search-Results,
+    │                        "Sync now"-Button mit Rate-Limit-Hard-Block)
+    └── settings/            SettingsScreen + ViewModel (Manual-Sync mit
+                             Rate-Limit-Force-Override-Dialog, Cancel-
+                             Sync, Logout)
 ```
 
 ## Out of Scope

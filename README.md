@@ -8,16 +8,17 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**Real-Device-validiert, Version 0.5.5 (versionCode 35).** End-to-End-Push
+**Real-Device-validiert, Version 0.5.8 (versionCode 38).** End-to-End-Push
 beobachtet: Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b
 den nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
 gegen `accounts.spotify.com`, Periodic + Manual `PoolSyncWorker` mit
-persistenter Rate-Limit-Awareness (kein Sync während Spotify-Strafe läuft),
+mehrschichtigem Rate-Limit-Schutz (Skip während laufender Spotify-Strafe,
+Per-Artist Frische-Skip, 30 s Inter-Artist-Cooldown, Per-Artist-Timeout),
 Compose-UI (Login → Whitelist → Artists → Settings) mit Status-Karte,
 Track-Position-Countdown, Skip-Button für den Vorschau-Pick, explizite
 Artist-Suche und 500-Zeilen-Log-Panel. App-Remote-SDK-Integration via
 `AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-Dynamic-
-Color folgt System-Dark-Mode. Suite: 144 Unit-Tests (JUnit + MockK +
+Color folgt System-Dark-Mode. Suite: 151 Unit-Tests (JUnit + MockK +
 Turbine + MockWebServer + Robolectric). Build clean, keine Warnings.
 
 Architektur-Details siehe Abschnitt „Architektur" unten; Personal-App-
@@ -163,29 +164,50 @@ Hintergrund:
 - `PoolSyncWorker` (WorkManager): periodisch alle 24 h auf UNMETERED
   Network, plus Manual aus Artists- und Settings-Screen. Auto-Sync nach
   Whitelist-Add ist bewusst weg — schnelle Adds rannten in
-  Spotify-Rate-Limits. Beim Eintritt prüft der Worker den
-  `RateLimitStore`: wenn Spotify eine Wartezeit angekündigt hat und der
-  Countdown noch läuft, exit mit `Result.success()` ohne API-Aufruf
-  (eine erneute Anfrage könnte als Hämmern interpretiert werden und die
-  Strafe verlängern). Die Settings-Override-Lane setzt
-  `inputData.force=true` und überspringt diese Check. Walks die
-  Whitelist → `/artists/{id}/albums` → `/albums/{id}/tracks`, filtert
-  Tracks ohne den angefragten Artist aus (Compilations / Various-
-  Artists-Releases liefern sonst Fremd-Tracks). Pro Artist wird der
-  Pool-Slice via `PoolTrackDao.replaceTracksForArtist` atomar getauscht
-  (`@Transaction` um `deleteByArtist` + `upsertAll`), damit ein Worker-
-  Kill zwischen Delete und Insert keinen kurzfristig leeren Slice
-  hinterlässt, den ein paralleler `pickNext` lesen könnte. Hard caps
-  gegen Endlos-Pagination (max 100 Album-Pages, max 20 Track-Pages
-  pro Album, plus Break bei `limit == 0` aus pathologischen Dev-Mode-
-  Responses). 10-min-Worker-Timeout als letzte Verteidigungslinie.
-  Bei HTTP 429 mit Retry-After ≤ 120 s wird in-run `delay()`-gewartet
-  (max 3 Versuche pro Artist); größere Werte werden an WorkManager-
-  Backoff (5-min EXPONENTIAL initial, max 5 h) übergeben. In jedem
-  Rate-Limit-Pfad schreibt der Worker `(retryAfterSeconds, jetzt)` in
-  den `RateLimitStore`, damit die Home-Status-Karte einen Live-
-  Countdown rendern kann; bei erfolgreichem Sync-Ende cleart er den
-  Store.
+  Spotify-Rate-Limits. Walks die Whitelist → `/artists/{id}/albums` →
+  `/albums/{id}/tracks`, filtert Tracks ohne den angefragten Artist aus
+  (Compilations / Various-Artists-Releases liefern sonst Fremd-Tracks).
+  Pro Artist wird der Pool-Slice via `PoolTrackDao.replaceTracksForArtist`
+  atomar getauscht (`@Transaction` um `deleteByArtist` + `upsertAll`),
+  damit ein Worker-Kill zwischen Delete und Insert keinen kurzfristig
+  leeren Slice hinterlässt, den ein paralleler `pickNext` lesen könnte.
+  Hard caps gegen Endlos-Pagination (max 100 Album-Pages, max 20
+  Track-Pages pro Album, plus Break bei `limit == 0` aus pathologischen
+  Dev-Mode-Responses).
+
+  Vierschichtiger Rate-Limit-Schutz:
+
+  1. **Active-Skip:** beim doWork-Entry prüft der Worker den
+     `RateLimitStore`; wenn Spotify eine Wartezeit angekündigt hat und
+     der Countdown noch läuft, exit mit `Result.success()` ohne
+     API-Aufruf. Eine erneute Anfrage während der angekündigten
+     Wartezeit könnte als Hämmern interpretiert werden und die Strafe
+     verlängern. Die Settings-Override-Lane setzt `inputData.force=true`
+     und überspringt diesen Check.
+  2. **Per-Artist Frische-Skip:** pro Artist wird vor dem Fetch
+     `lastSyncedEpochMsForArtist(id)` gegen `FRESH_THRESHOLD_MS` (18 h)
+     gemessen. Frische Slices bleiben unberührt — ein Manual-Sync wenige
+     Stunden nach dem Periodikum verbrennt nicht erneut die ganze API-
+     Quota. `force=true` übergeht auch das.
+  3. **Inter-Artist-Cooldown:** zwischen Artists, die tatsächlich die API
+     treffen, wartet der Worker `INTER_ARTIST_DELAY_MS` (30 s). Damit
+     ist Spotifys 30-s-Rolling-Window beim nächsten Burst leer, zwei
+     Artists landen nie im selben Fenster. Force übergeht den Cooldown
+     nicht — der Override soll respektvoll mit der API umgehen.
+  4. **In-Run 429-Handling:** bei HTTP 429 mit Retry-After ≤ 120 s wird
+     in-run `delay()`-gewartet (max 3 Versuche pro Artist) und der
+     `RateLimitStore` mit `(retryAfterSeconds, jetzt)` befüllt; größere
+     Werte werden an WorkManager-Backoff (5-min EXPONENTIAL initial,
+     max 5 h) übergeben. Bei erfolgreichem Sync-Ende cleart der Worker
+     den Store.
+
+  Zweistufige Timeouts: jeder Artist bekommt sein eigenes
+  `MAX_PER_ARTIST_DURATION`-Budget (2 min). Ein hängender Artist kostet
+  nur seinen Turn — `withTimeoutOrNull` returnt `null`, Log
+  `sync: <id> timed out`, der existierende Pool-Slice bleibt, der Worker
+  macht mit dem nächsten Artist weiter. `MAX_RUN_DURATION` (30 min) ist
+  das äußere Safety-Net für nicht-Fetch-Hänger (DB, sonstige
+  Pathologien) und sollte in der Praxis nie greifen.
 - `PlaybackOrchestratorService` (Foreground, `mediaPlayback`): hostet
   den `PlaybackOrchestrator` (pure Kotlin, testbar ohne Android), der
   einen `Flow<PlayerState>` aus `PlayerStateSource` konsumiert und

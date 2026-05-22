@@ -31,9 +31,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -55,8 +57,22 @@ fun ArtistsScreen(
     val rows by vm.displayedArtists.collectAsState()
     val isSearching by vm.isSearching.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
+    val rateLimit by vm.rateLimit.collectAsState()
     val searchError by vm.searchError.collectAsState()
     val deletedSnapshot by vm.deletedSnapshot.collectAsState()
+
+    // Local 1 Hz tick so the rate-limit-active check re-evaluates as the
+    // countdown approaches 0 — without it the button would stay disabled
+    // for a few seconds after the wait ends, until something else forces
+    // a recomposition.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val isRateLimited = (rateLimit?.remainingSecondsAt(now) ?: 0) > 0
     var query by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
     val undoLabel = stringResource(R.string.artists_undo)
@@ -140,17 +156,22 @@ fun ArtistsScreen(
             // Manual sync. Adds no longer auto-trigger a sync (rate-limit
             // risk during multi-artist sessions); this button is the
             // explicit replacement. Disabled while a sync is in flight to
-            // avoid the user spamming REPLACE-enqueues. The "Cancel running
-            // sync" affordance lives in Settings — not duplicated here.
+            // avoid the user spamming REPLACE-enqueues, and hard-disabled
+            // while a Spotify rate-limit is still counting down — see the
+            // Settings screen for the override path. The "Cancel running
+            // sync" affordance also lives there.
             Button(
                 onClick = { vm.manualSync() },
-                enabled = !isSyncing,
+                enabled = !isSyncing && !isRateLimited,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
                     stringResource(
-                        if (isSyncing) R.string.pool_syncing
-                        else R.string.settings_manual_sync
+                        when {
+                            isSyncing -> R.string.pool_syncing
+                            isRateLimited -> R.string.sync_blocked_rate_limit
+                            else -> R.string.settings_manual_sync
+                        }
                     )
                 )
             }

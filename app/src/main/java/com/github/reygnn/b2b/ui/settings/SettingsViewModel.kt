@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.BackoffPolicy
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.data.auth.TokenStore
+import com.github.reygnn.b2b.data.repository.RateLimitState
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.work.PoolSyncWorkNames
 import com.github.reygnn.b2b.work.PoolSyncWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -17,6 +20,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -25,7 +29,10 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val tokenStore: TokenStore,
+    rateLimitStore: RateLimitStore,
 ) : ViewModel() {
+
+    val rateLimit: StateFlow<RateLimitState?> = rateLimitStore.state()
 
     private val _toastEvents = Channel<Int>(
         capacity = 4,
@@ -37,8 +44,15 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { tokenStore.clear() }
     }
 
-    fun manualSync() {
+    /**
+     * Schedule a one-shot sync. When [force] is true the worker skips its
+     * rate-limit short-circuit — only meaningful on the Settings screen,
+     * where the user has just dismissed the warning dialog acknowledging
+     * the risk of an extended Spotify penalty.
+     */
+    fun manualSync(force: Boolean = false) {
         val request = OneTimeWorkRequestBuilder<PoolSyncWorker>()
+            .setInputData(Data.Builder().putBoolean(PoolSyncWorker.KEY_FORCE, force).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(

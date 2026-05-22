@@ -3,6 +3,7 @@ package com.github.reygnn.b2b.work
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
@@ -13,8 +14,11 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
@@ -26,6 +30,11 @@ class PoolSyncWorkerTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
+
+    @Before fun stubRateLimitState() {
+        every { rateLimitStore.state() } returns rateLimitFlow
+    }
 
     @Test fun `when whitelist empty then succeeds and clears pool`() =
         runTest(mainRule.testScheduler) {
@@ -202,6 +211,49 @@ class PoolSyncWorkerTest {
 
             build().doWork()
 
+            coVerify(exactly = 1) { rateLimitStore.clear() }
+        }
+
+    @Test fun `skips the entire run while inside a recorded rate-limit window`() =
+        runTest(mainRule.testScheduler) {
+            // A 1-hour ban recorded just now: the worker must not even
+            // call the API. Spotify can extend the penalty if it sees a
+            // request during the announced wait.
+            rateLimitFlow.value = RateLimitState(
+                retryAfterSeconds = 3600,
+                recordedAtEpochMs = System.currentTimeMillis(),
+            )
+
+            val result = build().doWork()
+
+            // Success (not retry): retry would let WorkManager backoff
+            // re-fire before the ban window closes. We want a deterministic
+            // no-op until the next regular trigger.
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+            coVerify(exactly = 0) { dao.allIds() }
+            // Don't clear the store either — the user still needs to see
+            // the countdown.
+            coVerify(exactly = 0) { rateLimitStore.clear() }
+        }
+
+    @Test fun `proceeds when a previously recorded rate-limit has elapsed`() =
+        runTest(mainRule.testScheduler) {
+            // Record a 1s wait that was made well in the past: the
+            // remaining-seconds calc returns 0 and the run goes ahead.
+            // A subsequent successful sync clears the stale record.
+            rateLimitFlow.value = RateLimitState(
+                retryAfterSeconds = 1,
+                recordedAtEpochMs = System.currentTimeMillis() - 60_000L,
+            )
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
             coVerify(exactly = 1) { rateLimitStore.clear() }
         }
 

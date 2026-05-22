@@ -9,6 +9,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.github.reygnn.b2b.R
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
+import com.github.reygnn.b2b.data.repository.RateLimitState
+import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -86,7 +88,16 @@ class ArtistsViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
     private val poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
+    rateLimitStore: RateLimitStore,
 ) : ViewModel() {
+
+    /**
+     * Same source the home screen uses for the countdown line; here we
+     * use it to hard-block the "Sync now" button while the wait is still
+     * open. Settings has a softer override path (warning dialog) — see
+     * [com.github.reygnn.b2b.ui.settings.SettingsViewModel.manualSync].
+     */
+    val rateLimit: StateFlow<RateLimitState?> = rateLimitStore.state()
 
     /**
      * Mirrors the home screen's sync indicator so the user can see whether

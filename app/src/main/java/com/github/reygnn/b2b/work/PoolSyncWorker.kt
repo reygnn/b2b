@@ -43,7 +43,29 @@ class PoolSyncWorker @AssistedInject constructor(
     private val rateLimitStore: RateLimitStore,
 ) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result =
+    override suspend fun doWork(): Result {
+        // Settings → "Sync now" can pass force=true after the user dismisses
+        // the rate-limit warning dialog. Every other trigger (periodic 24 h,
+        // Artists "Sync now" button) leaves the flag false and respects the
+        // skip below.
+        val force = inputData.getBoolean(KEY_FORCE, false)
+        // If we're still inside a rate-limit window that Spotify previously
+        // announced, do not hit the API again — Spotify can interpret a
+        // request during the announced wait as hammering and extend the
+        // penalty. The countdown lives on the home screen; the user can
+        // see why the run was a no-op.
+        //
+        // Result.success() (not retry): WorkManager would otherwise re-fire
+        // on its exponential backoff before the ban window expires. The
+        // next regular trigger (periodic 24h or the user pressing "Sync
+        // now" after the countdown reaches 0) will pick it up.
+        if (!force) rateLimitStore.state().value?.let { state ->
+            val remaining = state.remainingSecondsAt(System.currentTimeMillis())
+            if (remaining > 0) {
+                log.log("sync: rate-limited for ${remaining}s more, skipping run")
+                return Result.success()
+            }
+        }
         // Last-resort cap so a runaway sync can never leave the worker stuck
         // in RUNNING forever — the symptom that triggered this fix: 1 h
         // "Syncing now…" because the fetchAllTrackUrisForArtist pagination
@@ -52,7 +74,8 @@ class PoolSyncWorker @AssistedInject constructor(
         // throttles us with 30 s delays across many artists we still want
         // a deterministic ceiling. On timeout: hand off to WorkManager's
         // exponential backoff via Result.retry().
-        withTimeoutOrNull(MAX_RUN_DURATION) { runSync() } ?: Result.retry()
+        return withTimeoutOrNull(MAX_RUN_DURATION) { runSync() } ?: Result.retry()
+    }
 
     private suspend fun runSync(): Result {
         // Two queries deliberately. `activeIds` drives the fetch loop —
@@ -133,18 +156,25 @@ class PoolSyncWorker @AssistedInject constructor(
         return Result.success()
     }
 
-    private companion object {
-        const val MAX_RATE_LIMIT_ATTEMPTS = 3
+    companion object {
+        /**
+         * Input-data key for forcing a sync past the rate-limit skip
+         * (Settings → "Sync now" after the user confirms the warning).
+         * Default false everywhere else.
+         */
+        const val KEY_FORCE = "force"
+
+        private const val MAX_RATE_LIMIT_ATTEMPTS = 3
 
         // 10 minutes is generous for a few artists with normal-sized
         // discographies even when Spotify is rate-limiting (each 429
         // burns up to 30 s). Beyond this it's not throttling — it's
         // pathology, and we'd rather hand off to WorkManager retry.
-        val MAX_RUN_DURATION = 10.minutes
+        private val MAX_RUN_DURATION = 10.minutes
 
         // Spotifys typical Retry-After is 1–30 s. Real-world we've seen
         // outliers in the tens of thousands of seconds after sustained
         // hammering — those want WorkManager backoff, not an in-run wait.
-        const val MAX_RATE_LIMIT_WAIT_SECONDS = 120
+        private const val MAX_RATE_LIMIT_WAIT_SECONDS = 120
     }
 }

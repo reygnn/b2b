@@ -61,6 +61,11 @@
     <string name="artists_label">Artists</string>
     <string name="artists_summary">%1$d aktiv von %2$d total</string>
     <string name="rate_limit_label">Rate-Limit</string>
+    <string name="sync_blocked_rate_limit">Sync gesperrt — Rate-Limit aktiv</string>
+    <string name="rate_limit_dialog_title">Rate-Limit aktiv</string>
+    <string name="rate_limit_dialog_text">Spotify hat eine Wartezeit von %1$s angekündigt. Ein Sync jetzt kann die Strafe verlängern. Trotzdem syncen?</string>
+    <string name="rate_limit_dialog_force">Trotzdem syncen</string>
+    <string name="rate_limit_dialog_cancel">Abbrechen</string>
 
     <string name="ago_seconds">%1$ds ago</string>
     <string name="ago_minutes">%1$dmin ago</string>

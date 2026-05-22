@@ -30,6 +30,15 @@ interface PoolRepository {
     suspend fun trackCount(): Int
     fun observeTrackCount(): Flow<Int>
     fun observeLatestSyncEpochMs(): Flow<Long?>
+
+    /**
+     * Wall-clock of the freshest pool row for [artistId], or `null` if the
+     * artist has no rows (just added, or removed-but-not-yet-pruned).
+     * The sync worker uses this to skip artists whose slice is still
+     * fresh enough that re-fetching would just burn Spotify API quota.
+     */
+    suspend fun lastSyncedEpochMsForArtist(artistId: String): Long?
+
     suspend fun randomTrackExcluding(excludedUris: Set<String>): Track?
     suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>)
     suspend fun deleteTracksForArtist(artistId: String)

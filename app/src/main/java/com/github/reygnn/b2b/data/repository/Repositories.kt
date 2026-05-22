@@ -305,6 +305,9 @@ class PoolRepositoryImpl @Inject constructor(
 
     override fun observeLatestSyncEpochMs(): Flow<Long?> = dao.observeLatestSyncEpochMs()
 
+    override suspend fun lastSyncedEpochMsForArtist(artistId: String): Long? =
+        withContext(io) { dao.lastSyncedEpochMsForArtist(artistId) }
+
     override suspend fun randomTrackExcluding(excludedUris: Set<String>): Track? = withContext(io) {
         val entity = if (excludedUris.isEmpty()) dao.random()
         else dao.randomExcluding(excludedUris.toList())

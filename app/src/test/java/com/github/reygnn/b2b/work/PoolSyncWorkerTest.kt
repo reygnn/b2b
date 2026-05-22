@@ -1,5 +1,6 @@
 package com.github.reygnn.b2b.work
 
+import androidx.work.Data
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
@@ -34,6 +35,10 @@ class PoolSyncWorkerTest {
 
     @Before fun stubRateLimitState() {
         every { rateLimitStore.state() } returns rateLimitFlow
+        // Default: every artist looks "never synced" so the freshness skip
+        // is a no-op and the legacy tests below see the pre-skip behaviour.
+        // Tests that exercise the skip explicitly set their own stubs.
+        coEvery { poolRepo.lastSyncedEpochMsForArtist(any()) } returns null
     }
 
     @Test fun `when whitelist empty then succeeds and clears pool`() =
@@ -257,20 +262,73 @@ class PoolSyncWorkerTest {
             coVerify(exactly = 1) { rateLimitStore.clear() }
         }
 
+    // ---- Per-artist freshness skip -------------------------------------
+
+    @Test fun `skips an artist whose slice was synced recently`() =
+        runTest(mainRule.testScheduler) {
+            // Synced 1 hour ago — well inside the 18 h threshold. The
+            // worker must not even ask the Spotify API for this artist.
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
+                System.currentTimeMillis() - 60L * 60 * 1000
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
+    @Test fun `still fetches an artist whose slice has aged past the threshold`() =
+        runTest(mainRule.testScheduler) {
+            // Synced 24 h ago — past the 18 h threshold. The periodic
+            // worker must pick this up; otherwise the pool would freeze
+            // after the first sync.
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
+                System.currentTimeMillis() - 24L * 60 * 60 * 1000
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            build().doWork()
+
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
+    @Test fun `force ignores the freshness skip`() =
+        runTest(mainRule.testScheduler) {
+            // Even though the slice was just synced, force=true (Settings
+            // override after the rate-limit dialog) bypasses the skip.
+            // Otherwise the Force button could silently do nothing.
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
+                System.currentTimeMillis()
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            build(force = true).doWork()
+
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        }
+
     private fun stubIds(allIds: List<String>, activeIds: List<String>) {
         coEvery { dao.allIds() } returns allIds
         coEvery { dao.activeIds() } returns activeIds
     }
 
-    private fun build(): PoolSyncWorker = PoolSyncWorker(
-        appContext = mockk(relaxed = true),
-        params = mockk<WorkerParameters>(relaxed = true),
-        artistRepo = artistRepo,
-        poolRepo = poolRepo,
-        whitelistDao = dao,
-        log = mockk<LogSink>(relaxed = true),
-        rateLimitStore = rateLimitStore,
-    )
+    private fun build(force: Boolean = false): PoolSyncWorker {
+        val params = mockk<WorkerParameters>(relaxed = true)
+        if (force) every { params.inputData } returns
+            Data.Builder().putBoolean(PoolSyncWorker.KEY_FORCE, true).build()
+        return PoolSyncWorker(
+            appContext = mockk(relaxed = true),
+            params = params,
+            artistRepo = artistRepo,
+            poolRepo = poolRepo,
+            whitelistDao = dao,
+            log = mockk<LogSink>(relaxed = true),
+            rateLimitStore = rateLimitStore,
+        )
+    }
 
     private fun track(uri: String, artistId: String) = Track(
         uri = uri,

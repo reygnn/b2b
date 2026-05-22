@@ -83,6 +83,18 @@ abstract class PoolTrackDao {
     @Query("SELECT MAX(lastSyncedEpochMs) FROM pool_track")
     abstract fun observeLatestSyncEpochMs(): Flow<Long?>
 
+    /**
+     * Most recent sync timestamp for a single artist, or `null` if the
+     * artist has no pool rows yet (just added, or pruned previously).
+     * Drives the per-artist freshness skip in [com.github.reygnn.b2b.work.PoolSyncWorker]:
+     * artists whose slice was refreshed within the threshold are skipped
+     * on this run to keep our Spotify API rate well below the 30 s window.
+     * Returning `null` for an empty slice is intentional — that artist
+     * must be fetched (the caller treats `null` as "never synced").
+     */
+    @Query("SELECT MAX(lastSyncedEpochMs) FROM pool_track WHERE artistId = :artistId")
+    abstract suspend fun lastSyncedEpochMsForArtist(artistId: String): Long?
+
     @Query("SELECT COUNT(*) FROM pool_track WHERE artistId = :artistId")
     abstract suspend fun countForArtist(artistId: String): Int
 

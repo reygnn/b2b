@@ -74,10 +74,10 @@ class PoolSyncWorker @AssistedInject constructor(
         // throttles us with 30 s delays across many artists we still want
         // a deterministic ceiling. On timeout: hand off to WorkManager's
         // exponential backoff via Result.retry().
-        return withTimeoutOrNull(MAX_RUN_DURATION) { runSync() } ?: Result.retry()
+        return withTimeoutOrNull(MAX_RUN_DURATION) { runSync(force) } ?: Result.retry()
     }
 
-    private suspend fun runSync(): Result {
+    private suspend fun runSync(force: Boolean): Result {
         // Two queries deliberately. `activeIds` drives the fetch loop —
         // inactive artists are paused and shouldn't burn Spotify API quota.
         // `allIds` drives the final prune so the inactive artists' pool
@@ -94,6 +94,23 @@ class PoolSyncWorker @AssistedInject constructor(
         log.log("sync: start, ${activeIds.size} active / ${allIds.size} whitelisted")
 
         for (id in activeIds) {
+            // Freshness skip: if this artist's slice was already refreshed
+            // recently we don't need to re-fetch — Spotify's quota is per
+            // 30 s window, and a manual sync run minutes after the periodic
+            // one would otherwise burn the same hundreds of requests for
+            // zero gain. The Settings-override force=true bypasses this
+            // (alongside the rate-limit skip in doWork). New artists have
+            // no rows yet → lastSync == null → falls through to fetch.
+            if (!force) {
+                val lastSync = poolRepo.lastSyncedEpochMsForArtist(id)
+                if (lastSync != null) {
+                    val ageMs = System.currentTimeMillis() - lastSync
+                    if (ageMs in 0 until FRESH_THRESHOLD_MS) {
+                        log.log("sync: $id skip (synced ${ageMs / 60_000}min ago)")
+                        continue
+                    }
+                }
+            }
             log.log("sync: $id fetching…")
             var rateLimitAttempts = 0
             while (true) {
@@ -176,5 +193,13 @@ class PoolSyncWorker @AssistedInject constructor(
         // outliers in the tens of thousands of seconds after sustained
         // hammering — those want WorkManager backoff, not an in-run wait.
         private const val MAX_RATE_LIMIT_WAIT_SECONDS = 120
+
+        // Per-artist freshness threshold. 18 h sits below the 24 h
+        // periodic interval so the next scheduled run always re-fetches
+        // (the slice's age has exceeded the threshold by then), while a
+        // manual sync minutes-to-hours after the periodic short-circuits
+        // each artist whose slice is still fresh — protecting Spotify's
+        // 30 s rate-limit window from the next burst.
+        private const val FRESH_THRESHOLD_MS = 18L * 60 * 60 * 1000
     }
 }

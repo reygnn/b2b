@@ -93,9 +93,9 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    limits when several artists were added in quick succession). Instead,
    the artists screen has an explicit **"Sync now"** button; the 24 h
    periodic worker still runs in any case. While a Spotify rate limit is
-   active the button is hard-disabled (label: "Sync gesperrt —
-   Rate-Limit aktiv") — the override lives in the Settings screen,
-   behind a warning dialog. Inactive artists keep their pool tracks for
+   active the button is hard-disabled (label: "Sync blocked — rate
+   limit active") — the override lives in the Settings screen, behind
+   a warning dialog. Inactive artists keep their pool tracks for
    fast reactivation; the next sync skips them (no API usage), and the
    picker filters them out via a JOIN on `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` starts as a foreground
@@ -118,7 +118,7 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
      active artists (same JOIN semantics as the picker — paused artists
      do not contribute to the display, even though their tracks remain
      in the DB).
-   - `Artists: X aktiv von Y total` — the whitelist at a glance.
+   - `Artists: X active of Y total` — the whitelist at a glance.
    - `Rate-Limit: HH:MM:SS` — visible only when Spotify has announced a
      wait to the `PoolSyncWorker` and the countdown is still running.
      Ticks every second, disappears at 0, and survives app restart
@@ -130,11 +130,11 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    intentionally not a persistence mechanism.
 8. Settings: "Sync pool now" (REPLACE policy, its own unique-work lane).
    If a Spotify rate limit is still running, the click first opens a
-   warning dialog showing the remaining wait plus a "Trotzdem syncen"
-   ("Sync anyway") button, which fires the worker with
-   `inputData.force=true` past its rate-limit skip — deliberately the
-   only override path, so an accidental tap cannot extend Spotify's
-   penalty. "Cancel running sync" is the emergency exit when a worker
+   warning dialog showing the remaining wait plus a "Sync anyway"
+   button, which fires the worker with `inputData.force=true` past its
+   rate-limit skip — deliberately the only override path, so an
+   accidental tap cannot extend Spotify's penalty. "Cancel running
+   sync" is the emergency exit when a worker
    is stuck (calls `WorkManager.cancelUniqueWork` on all lanes). "Sign
    out" calls `TokenStore.clear()` and the nav graph routes back to
    Login.

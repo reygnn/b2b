@@ -179,9 +179,11 @@ do not throw across layer boundaries.
      from repositories. ViewModels never call Retrofit/Room directly.
 
 7. **English in new comments and KDoc.** Existing code is English; keep
-   it that way. UI strings live in `res/values/strings.xml`. No
-   `values-de/` exists yet; add it (and update both) when localised
-   strings appear.
+   it that way. UI strings live in `res/values/strings.xml` (American
+   English, default locale) with a parallel German translation in
+   `res/values-de/strings.xml`. Both files have identical string IDs —
+   any new string must be added in both, or the German build will fall
+   back to the default with a mid-screen language switch.
 
 ---
 

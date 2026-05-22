@@ -8,7 +8,7 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**Real-Device-validiert, Version 0.3.6 (versionCode 27).** End-to-End-Push
+**Real-Device-validiert, Version 0.4.0 (versionCode 28).** End-to-End-Push
 beobachtet: Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b
 den nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
 gegen `accounts.spotify.com`, Periodic + One-Shot + Manual `PoolSyncWorker`,

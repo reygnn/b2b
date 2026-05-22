@@ -64,7 +64,14 @@ fun ArtistsScreen(
             ) {
                 OutlinedTextField(
                     value = query,
-                    onValueChange = { query = it },
+                    onValueChange = {
+                        query = it
+                        // Drives the debounced search-as-you-type path in
+                        // the VM (300 ms). The IME Search action and the
+                        // search button still call submitSearch directly
+                        // for an immediate hit.
+                        vm.onQueryChange(it)
+                    },
                     label = { Text(stringResource(R.string.artists_search_label)) },
                     modifier = Modifier.weight(1f),
                     singleLine = true,

@@ -67,9 +67,26 @@ class AppRemotePlayerStateSource @Inject constructor(
 
         var appRemote: SpotifyAppRemote? = null
         var subscription: Subscription<com.spotify.protocol.types.PlayerState>? = null
+        // True after awaitClose has run. Closes the race window between
+        // `SpotifyAppRemote.connect(...)` returning and `onConnected` firing:
+        // if the collector cancels in that window, `appRemote` is still null
+        // when awaitClose runs, so the disconnect call below is skipped — and
+        // a late onConnected would then leak the SDK connection. Setting this
+        // flag in awaitClose lets the (still-pending) onConnected disconnect
+        // itself when it eventually fires. Single-threaded access: callbackFlow
+        // producer, awaitClose, and the SDK callback all run on
+        // [mainDispatcher] thanks to `flowOn` (and the SDK's own Main-Handler).
+        var awaitingDisconnect = false
 
         val listener = object : Connector.ConnectionListener {
             override fun onConnected(remote: SpotifyAppRemote) {
+                if (awaitingDisconnect) {
+                    // Collector was cancelled while we were still connecting;
+                    // hand the freshly-acquired remote straight to disconnect.
+                    log.log("app-remote: connected after cancel — disconnecting")
+                    SpotifyAppRemote.disconnect(remote)
+                    return
+                }
                 log.log("app-remote: connected")
                 appRemote = remote
                 val sub = remote.playerApi.subscribeToPlayerState()
@@ -109,6 +126,7 @@ class AppRemotePlayerStateSource @Inject constructor(
 
         awaitClose {
             log.log("app-remote: disconnecting")
+            awaitingDisconnect = true
             subscription?.cancel()
             appRemote?.let { SpotifyAppRemote.disconnect(it) }
         }

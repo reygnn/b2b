@@ -28,6 +28,15 @@ class B2BApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // Failfast before any feature kicks off. An empty client id makes the
+        // auth URL malformed (`client_id=`) and Spotify returns a cryptic 400
+        // at OAuth time — better to fail loudly here so the broken build is
+        // caught at app start, not at the first login attempt. Setup steps
+        // are in the README.
+        check(BuildConfig.SPOTIFY_CLIENT_ID.isNotBlank()) {
+            "SPOTIFY_CLIENT_ID is empty. Set it in ~/.gradle/gradle.properties " +
+                "(or the project-local gradle.properties); see README."
+        }
         schedulePoolSync()
     }
 

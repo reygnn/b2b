@@ -5,6 +5,8 @@ import com.github.reygnn.b2b.di.IoDispatcher
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.security.MessageDigest
@@ -40,6 +42,18 @@ class PkceAuthManager @Inject constructor(
     private val log: LogSink,
 ) {
     @Volatile private var pendingVerifier: String? = null
+
+    // Serializes concurrent refresh attempts. Without this, two parallel 401s
+    // from the main OkHttp client (e.g. a service-start premium check
+    // colliding with a worker-side artist fetch right after a 24-hour token
+    // expiry) would each call [refresh], each read the same stored refresh
+    // token, each POST it to /api/token, and — if Spotify rotates the
+    // refresh token — the second POST would either receive a different new
+    // access token (clobbering the first thread's) or be rejected with the
+    // first thread's already-invalidated refresh token. With the mutex, the
+    // second caller waits, then checks whether the access token has already
+    // changed under it and skips the HTTP call if so.
+    private val refreshMutex = Mutex()
 
     fun buildAuthorizationUri(scopes: List<String>): String {
         val verifier = randomVerifier()
@@ -87,7 +101,7 @@ class PkceAuthManager @Inject constructor(
             }
             val refresh = body.refreshToken
                 ?: return Outcome.Error.Unknown("No refresh_token in token response")
-            tokenStore.store(
+            tokenStore.storeFromInitialExchange(
                 accessToken = body.accessToken,
                 refreshToken = refresh,
                 expiresAtEpochMs = System.currentTimeMillis() + body.expiresInSeconds * 1000L,
@@ -108,16 +122,49 @@ class PkceAuthManager @Inject constructor(
     }
 
     /**
-     * Called by [AuthInterceptor] on 401. Returns the new access token, or
-     * null if no refresh token is stored or the refresh request failed. On
-     * null, the interceptor surfaces the original 401 to the caller.
+     * Called by [com.github.reygnn.b2b.data.remote.AuthInterceptor] on 401.
+     * Returns the new access token, or null if no refresh token is stored or
+     * the refresh request failed. On null, the interceptor surfaces the
+     * original 401 to the caller.
+     *
+     * @param staleAccessToken the access token the caller saw rejected with
+     *   401. If the store's current access token differs from this value by
+     *   the time we hold the mutex, we infer that another concurrent caller
+     *   has already produced a fresh token and we return it directly without
+     *   a redundant HTTP refresh. Pass null to force a refresh (e.g. tests).
      */
-    suspend fun refresh(): String? = withContext(io) {
+    suspend fun refresh(staleAccessToken: String?): String? = withContext(io) {
+        refreshMutex.withLock {
+            // Coalesce: if the store already holds a fresher access token
+            // than the one that triggered our 401, another caller raced
+            // ahead. Hand back its result instead of making a redundant
+            // HTTP request (which would, on a Spotify rotation, double-
+            // rotate the refresh token and invalidate one chain).
+            if (staleAccessToken != null) {
+                val current = tokenStore.accessToken()
+                if (current != null && current != staleAccessToken) {
+                    log.log("auth: refresh coalesced — fresher token already available")
+                    return@withLock current
+                }
+            }
+            doRefresh()
+        }
+    }
+
+    private suspend fun doRefresh(): String? {
+        // Capture the session epoch BEFORE the HTTP round-trip. If the user
+        // taps "Sign out" while we are suspended on the network, [TokenStore.clear]
+        // will increment the epoch (and wipe the prefs). When we resume and
+        // try to persist, [TokenStore.storeIfMatchingEpoch] will see a stale
+        // epoch and reject the write — the refresh result is dropped on the
+        // floor instead of silently re-creating tokens after the user
+        // intended to log out.
+        val epoch = tokenStore.sessionEpoch()
         val currentRefresh = tokenStore.refreshToken() ?: run {
             log.log("auth: refresh skipped — no token stored")
-            return@withContext null
+            return null
         }
-        try {
+        return try {
             val response = accountsApi.refreshToken(
                 refreshToken = currentRefresh,
                 clientId = clientId,
@@ -125,16 +172,21 @@ class PkceAuthManager @Inject constructor(
             val body = response.body()
             if (!response.isSuccessful || body == null) {
                 log.log("auth: refresh failed — HTTP ${response.code()}")
-                return@withContext null
+                return null
             }
             // Spotify may or may not rotate the refresh token; if it does, store
             // the new one, otherwise keep the existing one.
             val newRefresh = body.refreshToken ?: currentRefresh
-            tokenStore.store(
+            val stored = tokenStore.storeIfMatchingEpoch(
+                expectedEpoch = epoch,
                 accessToken = body.accessToken,
                 refreshToken = newRefresh,
                 expiresAtEpochMs = System.currentTimeMillis() + body.expiresInSeconds * 1000L,
             )
+            if (!stored) {
+                log.log("auth: refresh result discarded — session ended during HTTP")
+                return null
+            }
             log.log("auth: refresh ok")
             body.accessToken
         } catch (_: IOException) {

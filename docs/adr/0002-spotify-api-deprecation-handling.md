@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-16
+Last reviewed: 2026-05-21
 
 ## Context
 
@@ -25,7 +26,14 @@ intentionally needs none of them:
   (paginated). Tracks the artist actually released — usually the right thing
   for "I want to hear more of this artist".
 - Discovery: handled by the user adding artists explicitly via `/search`.
-- Playback control: `/me/player/devices`, `/me/player/queue`.
+- Account product check: `/me` (reads the `product` field; needs the
+  `user-read-private` scope).
+- Playback control: `/me/player/queue`. We pass `device_id = null` and let
+  Spotify route to the currently active device; a 404 means "no active
+  device" and is mapped to `Outcome.Error.NoActiveDevice` in
+  `PlaybackRepositoryImpl.enqueue`. The earlier `/me/player/devices` probe
+  was removed when the orchestrator's enqueue path was simplified — server-
+  side routing plus 404 mapping subsumes it.
 
 The Retrofit interface `SpotifyApi` is the single point of API surface. New
 endpoints are added there with a code-review note confirming they are not on

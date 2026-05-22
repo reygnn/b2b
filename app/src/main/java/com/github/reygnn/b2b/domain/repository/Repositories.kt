@@ -21,6 +21,15 @@ interface PoolRepository {
     suspend fun randomTrackExcluding(excludedUris: Set<String>): Track?
     suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>)
     suspend fun deleteTracksForArtist(artistId: String)
+
+    /**
+     * Atomic replacement of an artist's slice of the pool: delete the
+     * existing rows for [artistId] and insert the fresh [tracks] in a
+     * single transaction. Used by the sync worker so a kill between delete
+     * and upsert can't leave the pool with the artist temporarily empty —
+     * the old slice survives until the new one is durable.
+     */
+    suspend fun replaceTracksForArtist(artistId: String, tracks: List<Track>)
 }
 
 interface RecentlyPlayedRepository {

@@ -7,7 +7,14 @@ import okhttp3.Response
 
 /**
  * Adds Bearer token to every Spotify Web API request. On 401, triggers a
- * single refresh attempt via TokenStore and retries the request once.
+ * single refresh attempt via [TokenStore.refresh] (which coalesces concurrent
+ * callers; see [com.github.reygnn.b2b.data.auth.PkceAuthManager.refresh])
+ * and retries the request once with the new token.
+ *
+ * On a failed refresh, the original 401 response is returned unchanged
+ * instead of being re-requested with the stale token — re-requesting would
+ * burn a guaranteed-401 round-trip and a slot in the OkHttp pool while
+ * delivering the same result.
  */
 class AuthInterceptor(
     private val tokenStore: TokenStore,
@@ -25,9 +32,13 @@ class AuthInterceptor(
         val response = chain.proceed(authed)
         if (response.code != 401) return response
 
-        // Refresh and retry once.
+        // Pass the stale token as the coalescing anchor: if another thread
+        // refreshed in the meantime, PkceAuthManager.refresh returns the
+        // current access token without an HTTP request.
+        val refreshed = runBlocking { tokenStore.refresh(staleAccessToken = token) }
+            ?: return response // refresh failed — surface the original 401 unchanged
+
         response.close()
-        val refreshed = runBlocking { tokenStore.refresh() } ?: return chain.proceed(authed)
         val retried = original.newBuilder()
             .addHeader("Authorization", "Bearer $refreshed")
             .build()

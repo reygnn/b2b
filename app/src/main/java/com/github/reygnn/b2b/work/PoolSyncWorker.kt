@@ -68,14 +68,12 @@ class PoolSyncWorker @AssistedInject constructor(
                 when (val tracks = artistRepo.fetchAllTrackUrisForArtist(id)) {
                     is Outcome.Success -> {
                         log.log("sync: $id → ${tracks.value.size} tracks")
-                        // Replace this artist's slice of the pool wholesale.
-                        // `upsertTracks` only replaces rows that collide on
-                        // URI — leftover tracks from a previous (buggier)
-                        // sync would otherwise linger forever under this
-                        // artist's id. Deleting first guarantees the pool
-                        // matches the current Spotify view of the artist.
-                        poolRepo.deleteTracksForArtist(id)
-                        poolRepo.upsertTracks(tracks.value)
+                        // Atomic swap of this artist's slice of the pool.
+                        // The DAO wraps delete + upsert in a single SQLite
+                        // transaction; a worker kill in the middle leaves the
+                        // old slice intact rather than briefly empty (which
+                        // would let a parallel pickNext miss the artist).
+                        poolRepo.replaceTracksForArtist(id, tracks.value)
                         break
                     }
                     is Outcome.Error.RateLimited -> {

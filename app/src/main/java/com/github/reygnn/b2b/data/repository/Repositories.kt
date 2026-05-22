@@ -299,10 +299,37 @@ class PoolRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>) =
-        withContext(io) { dao.deleteWhereArtistNotIn(currentArtistIds.toList()) }
+        withContext(io) {
+            // Empty `IN ()` in SQLite is undefined; Room's expansion does not
+            // delete any rows. Use the explicit deleteAll wipe instead so an
+            // empty whitelist actually clears the pool.
+            if (currentArtistIds.isEmpty()) dao.deleteAll()
+            else dao.deleteWhereArtistNotIn(currentArtistIds.toList())
+        }
 
     override suspend fun deleteTracksForArtist(artistId: String) =
         withContext(io) { dao.deleteByArtist(artistId) }
+
+    override suspend fun replaceTracksForArtist(artistId: String, tracks: List<Track>) =
+        withContext(io) {
+            val now = System.currentTimeMillis()
+            val entities = tracks.map {
+                PoolTrackEntity(
+                    uri = it.uri,
+                    name = it.name,
+                    artistId = it.artistId,
+                    artistName = it.artistName,
+                    durationMs = it.durationMs,
+                    lastSyncedEpochMs = now,
+                )
+            }
+            // Single SQLite transaction in the DAO: delete the artist's slice
+            // and upsert the fresh one atomically. A worker kill between the
+            // two operations would otherwise leave the artist temporarily
+            // absent from the pool and a parallel pickNext could observe an
+            // empty slice that should not be empty.
+            dao.replaceTracksForArtist(artistId, entities)
+        }
 }
 
 @Singleton

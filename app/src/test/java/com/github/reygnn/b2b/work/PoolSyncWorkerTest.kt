@@ -12,7 +12,6 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.coVerifyOrder
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
@@ -26,7 +25,7 @@ class PoolSyncWorkerTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
 
-    @Test fun `when whitelist empty then succeeds and prunes pool`() =
+    @Test fun `when whitelist empty then succeeds and clears pool`() =
         runTest(mainRule.testScheduler) {
             coEvery { dao.allIds() } returns emptyList()
 
@@ -34,6 +33,9 @@ class PoolSyncWorkerTest {
             val result = worker.doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            // Pins the empty-IN-list guard: deleteTracksForRemovedArtists with
+            // an empty set must actually clear the pool. The impl routes to
+            // dao.deleteAll() so the row count goes to zero.
             coVerify(exactly = 1) { poolRepo.deleteTracksForRemovedArtists(emptySet()) }
         }
 
@@ -49,12 +51,17 @@ class PoolSyncWorkerTest {
             val result = worker.doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify { poolRepo.upsertTracks(listOf(track("t1", "a1"))) }
-            coVerify { poolRepo.upsertTracks(listOf(track("t2", "a2"), track("t3", "a2"))) }
+            coVerify { poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1"))) }
+            coVerify {
+                poolRepo.replaceTracksForArtist(
+                    "a2",
+                    listOf(track("t2", "a2"), track("t3", "a2")),
+                )
+            }
             coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
         }
 
-    @Test fun `per-artist sync deletes the old pool slice before upserting the fresh one`() =
+    @Test fun `per-artist sync swaps the pool slice atomically`() =
         runTest(mainRule.testScheduler) {
             coEvery { dao.allIds() } returns listOf("a1")
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
@@ -62,13 +69,14 @@ class PoolSyncWorkerTest {
 
             build().doWork()
 
-            // Delete must precede upsert so leftover tracks from an earlier
-            // sync (e.g. ones the old buggy filter left under this artist's
-            // id) are evicted, not just overlaid where URIs collide.
-            coVerifyOrder {
-                poolRepo.deleteTracksForArtist("a1")
-                poolRepo.upsertTracks(listOf(track("t1", "a1")))
+            // Replace is a single transactional call now; the prior
+            // delete-then-upsert pair was not atomic — a worker kill between
+            // the two left the artist briefly absent from the pool.
+            coVerify(exactly = 1) {
+                poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1")))
             }
+            coVerify(exactly = 0) { poolRepo.deleteTracksForArtist(any()) }
+            coVerify(exactly = 0) { poolRepo.upsertTracks(any()) }
         }
 
     @Test fun `when rate limited then delays and succeeds on next attempt`() =
@@ -82,7 +90,7 @@ class PoolSyncWorkerTest {
             val result = build().doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify { poolRepo.upsertTracks(listOf(track("t1", "a1"))) }
+            coVerify { poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1"))) }
             coVerify(exactly = 2) { artistRepo.fetchAllTrackUrisForArtist("a1") }
         }
 

@@ -8,18 +8,20 @@ Empfehlungsalgorithmus wird damit umgangen.
 
 ## Status
 
-**Real-Device-validiert, Version 0.24.** End-to-End-Push beobachtet:
-Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b den
-nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
-(Exchange + Refresh) gegen `accounts.spotify.com`, Periodic + One-Shot
-+ Manual `PoolSyncWorker` mit Pagination-Safeguards und 10-min-Timeout,
+**Real-Device-validiert, Version 0.3.6 (versionCode 27).** End-to-End-Push
+beobachtet: Spotify spielt Whitelist-Track → 15 s vor Trackende schiebt b2b
+den nächsten Pool-Track in die Spotify-Queue → Übergang sauber. PKCE-OAuth
+gegen `accounts.spotify.com`, Periodic + One-Shot + Manual `PoolSyncWorker`,
 Compose-UI (Login → Whitelist → Artists → Settings) mit Status-Karte,
-Track-Position-Countdown, Skip-Button für den Vorschau-Pick und
-500-Zeilen-Log-Panel direkt auf dem Home-Screen. App-Remote-SDK-
-Integration via `AppRemotePlayerStateSource` (Main-Looper-pinned).
-Material-You-Dynamic-Color folgt System-Dark-Mode. Suite: ~84 Unit-
-Tests (JUnit + MockK + Turbine + MockWebServer + Robolectric). Build
-clean, keine Warnings. Personal-App-Konventionen siehe `CLAUDE.md`.
+Track-Position-Countdown, Skip-Button für den Vorschau-Pick, debounced
+Artist-Suche und 500-Zeilen-Log-Panel. App-Remote-SDK-Integration via
+`AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-Dynamic-
+Color folgt System-Dark-Mode. Suite: 113 Unit-Tests (JUnit + MockK +
+Turbine + MockWebServer + Robolectric). Build clean, keine Warnings.
+
+Architektur-Details siehe Abschnitt „Architektur" unten; Personal-App-
+Konventionen siehe `CLAUDE.md`; Code-Review-Korrekturen seit `b2b-main`
+siehe `FIXES.md`.
 
 ## Setup
 
@@ -136,15 +138,18 @@ Hintergrund:
   Network, One-Shot nach Whitelist-Add, Manual via Settings. Walks die
   Whitelist → `/artists/{id}/albums` → `/albums/{id}/tracks`, filtert
   Tracks ohne den angefragten Artist aus (Compilations / Various-
-  Artists-Releases liefern sonst Fremd-Tracks), löscht den Pool-Slice
-  des Artists und upsertet die frischen Tracks. Hard caps gegen Endlos-
-  Pagination (max 100 Album-Pages, max 20 Track-Pages pro Album, plus
-  Break bei `limit == 0` aus pathologischen Dev-Mode-Responses). 10-min-
-  Worker-Timeout als letzte Verteidigungslinie. Bei HTTP 429 mit
-  Retry-After ≤ 120 s wird in-run `delay()`-gewartet (max 3 Versuche
-  pro Artist); größere Werte werden an WorkManager-Backoff
-  (5-min EXPONENTIAL initial, max 5 h) übergeben, damit wir Spotify
-  nicht weiter hämmern und eine bestehende Penalty verlängern.
+  Artists-Releases liefern sonst Fremd-Tracks). Pro Artist wird der
+  Pool-Slice via `PoolTrackDao.replaceTracksForArtist` atomar getauscht
+  (`@Transaction` um `deleteByArtist` + `upsertAll`), damit ein Worker-
+  Kill zwischen Delete und Insert keinen kurzfristig leeren Slice
+  hinterlässt, den ein paralleler `pickNext` lesen könnte. Hard caps
+  gegen Endlos-Pagination (max 100 Album-Pages, max 20 Track-Pages
+  pro Album, plus Break bei `limit == 0` aus pathologischen Dev-Mode-
+  Responses). 10-min-Worker-Timeout als letzte Verteidigungslinie.
+  Bei HTTP 429 mit Retry-After ≤ 120 s wird in-run `delay()`-gewartet
+  (max 3 Versuche pro Artist); größere Werte werden an WorkManager-
+  Backoff (5-min EXPONENTIAL initial, max 5 h) übergeben, damit wir
+  Spotify nicht weiter hämmern und eine bestehende Penalty verlängern.
 - `PlaybackOrchestratorService` (Foreground, `mediaPlayback`): hostet
   den `PlaybackOrchestrator` (pure Kotlin, testbar ohne Android), der
   einen `Flow<PlayerState>` aus `PlayerStateSource` konsumiert und
@@ -157,6 +162,20 @@ Hintergrund:
   Spotify-App-Remote-SDK-Zugriff lebt ausschließlich in
   `AppRemotePlayerStateSource` — pinned via `flowOn(MainDispatcher)`,
   weil das SDK intern `Handler()` ohne expliziten Looper instanziiert.
+  Pre-onConnected-Cancel-Guard: wenn der Collector vor dem ersten
+  `onConnected`-Callback gecancelt wird, disconnected sich die frisch
+  erhaltene Remote im Callback selbst, anstatt eine Limbo-Connection
+  zu leaken.
+- Auth: `PkceAuthManager.refresh()` serialisiert konkurrierende
+  401-getriggerte Refresh-Versuche über eine `Mutex` und gibt einen
+  bereits unter dem Caller frisch gerotierten Access-Token zurück,
+  ohne einen redundanten HTTP-Request zu posten. Verhindert die
+  Spotify-Refresh-Token-Rotations-Invalidation bei parallelen 401s.
+  Zusätzlich kapselt `TokenStore` eine Session-Epoch: `clear()` (Logout)
+  inkrementiert sie, `doRefresh` capturet sie vor dem HTTP-Call und
+  persistiert via `storeIfMatchingEpoch` — ein zwischenzeitlicher Logout
+  invalidiert das Refresh-Ergebnis, anstatt Tokens nach dem Sign-out
+  stillschweigend wiederherzustellen.
 
 ## Spotify-API-Constraints
 

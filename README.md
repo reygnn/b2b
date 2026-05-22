@@ -16,7 +16,7 @@ Compose-UI (Login → Whitelist → Artists → Settings) mit Status-Karte,
 Track-Position-Countdown, Skip-Button für den Vorschau-Pick, debounced
 Artist-Suche und 500-Zeilen-Log-Panel. App-Remote-SDK-Integration via
 `AppRemotePlayerStateSource` (Main-Looper-pinned). Material-You-Dynamic-
-Color folgt System-Dark-Mode. Suite: 113 Unit-Tests (JUnit + MockK +
+Color folgt System-Dark-Mode. Suite: 135 Unit-Tests (JUnit + MockK +
 Turbine + MockWebServer + Robolectric). Build clean, keine Warnings.
 
 Architektur-Details siehe Abschnitt „Architektur" unten; Personal-App-
@@ -78,11 +78,16 @@ siehe `FIXES.md`.
 3. Nav-Graph schaltet automatisch auf `HomeScreen` (gating über
    `TokenStore.authState()`).
 4. **„Manage artists"** öffnet den dedizierten Artists-Screen: Suche
-   (mit 300 ms Debounce) liefert Treffer als Checkbox-Liste, Häkchen-
-   Toggle fügt zur Whitelist hinzu bzw. entfernt. Jede Add-Operation
-   triggert einen One-Shot `PoolSyncWorker` (`KEEP`-Policy → mehrere
-   schnelle Adds coalescen zu einem Lauf). Remove löscht die
-   zugehörigen Tracks sofort lokal aus dem Pool.
+   (mit 300 ms Debounce) liefert Treffer als Listenzeilen mit „+"-Button
+   zum Hinzufügen. Whitelist-Einträge oben in der Liste haben eine
+   Aktiv-Checkbox (ob der Random-Picker sie aktuell verwendet — Toggle
+   passiert lokal, kein Sync) und ein 🗑-Icon für endgültiges Entfernen
+   mit 5 s Undo-Snackbar. Jede Add-Operation triggert einen One-Shot
+   `PoolSyncWorker` (`KEEP`-Policy → mehrere schnelle Adds coalescen zu
+   einem Lauf). Inaktive Artists behalten ihre Pool-Tracks für ein
+   schnelles Re-Aktivieren; der nächste Sync überspringt sie (kein
+   API-Verbrauch) und der Picker filtert sie via JOIN auf
+   `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` startet als
    Foreground, verbindet sich via App Remote mit der lokalen Spotify-
    Instanz, beobachtet `PlayerState`. Position-basierter Timer:
@@ -248,7 +253,8 @@ app/src/main/java/com/github/reygnn/b2b/
     │                        Service-Toggle, Skip-Pick, Log-Panel,
     │                        BuildConfig.VERSION_NAME in der TopAppBar)
     ├── artists/             ArtistsScreen + ViewModel (Search-Debounce,
-    │                        Checkbox-Toggle-Liste für die Whitelist)
+    │                        Aktiv-Checkbox + Trash-mit-Undo für Whitelist-
+    │                        Einträge, "+"-Button für Search-Results)
     └── settings/            SettingsScreen + ViewModel (Manual-Sync,
                              Cancel-Sync, Logout)
 ```
@@ -273,7 +279,6 @@ app/src/main/java/com/github/reygnn/b2b/
   Orchestrator emittiert `SpotifyUnavailable` und der `run`-Loop endet;
   Service bleibt foreground aber tut nichts mehr bis User stop+start.
 - Release-Signing-Konfiguration + ProGuard-Regeln für die Spotify-SDK.
-- Room-Migration-Setup (`exportSchema = true` + `room.schemaLocation`).
 - Bias-Pick: aktuell uniform random aus dem ganzen Pool. „Stay with the
   current artist" o.ä. wäre denkbar — aktuell intentional uniform.
 

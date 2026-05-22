@@ -53,15 +53,21 @@ class PoolSyncWorker @AssistedInject constructor(
         withTimeoutOrNull(MAX_RUN_DURATION) { runSync() } ?: Result.retry()
 
     private suspend fun runSync(): Result {
-        val artistIds = whitelistDao.allIds()
-        log.log("sync: start, ${artistIds.size} artists")
-        if (artistIds.isEmpty()) {
+        // Two queries deliberately. `activeIds` drives the fetch loop —
+        // inactive artists are paused and shouldn't burn Spotify API quota.
+        // `allIds` drives the final prune so the inactive artists' pool
+        // slices survive (they would otherwise be flagged as "not in the
+        // current sync set" and wiped, defeating the lazy-stays design).
+        val allIds = whitelistDao.allIds()
+        if (allIds.isEmpty()) {
             poolRepo.deleteTracksForRemovedArtists(emptySet())
             log.log("sync: empty whitelist, done")
             return Result.success()
         }
+        val activeIds = whitelistDao.activeIds()
+        log.log("sync: start, ${activeIds.size} active / ${allIds.size} whitelisted")
 
-        for (id in artistIds) {
+        for (id in activeIds) {
             log.log("sync: $id fetching…")
             var rateLimitAttempts = 0
             while (true) {
@@ -109,7 +115,7 @@ class PoolSyncWorker @AssistedInject constructor(
             }
         }
 
-        poolRepo.deleteTracksForRemovedArtists(artistIds.toSet())
+        poolRepo.deleteTracksForRemovedArtists(allIds.toSet())
         log.log("sync: complete")
         return Result.success()
     }

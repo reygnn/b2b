@@ -17,9 +17,16 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -43,10 +52,39 @@ fun ArtistsScreen(
     val rows by vm.displayedArtists.collectAsState()
     val isSearching by vm.isSearching.collectAsState()
     val searchError by vm.searchError.collectAsState()
+    val deletedSnapshot by vm.deletedSnapshot.collectAsState()
     var query by remember { mutableStateOf("") }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val undoLabel = stringResource(R.string.artists_undo)
+    val deletedTemplate = stringResource(R.string.artists_deleted_snackbar)
+
+    // When the VM publishes a deletion snapshot, show a snackbar with Undo.
+    // The snackbar's lifetime is bound to the snapshot's lifetime in the VM
+    // (5 s timeout there), so we pass [SnackbarDuration.Indefinite] and let
+    // the VM drive expiration via [deletedSnapshot] going null. That keeps
+    // a single timer authoritative — Material's own duration handling
+    // would otherwise race the VM's timer and could clear the snackbar
+    // while the snapshot is still restorable, or vice versa.
+    LaunchedEffect(deletedSnapshot) {
+        val snapshot = deletedSnapshot ?: run {
+            // Snapshot expired (timeout) or was consumed by undoDelete. Pull
+            // the current snackbar so the next deletion's snackbar isn't
+            // stacked on top.
+            snackbarHostState.currentSnackbarData?.dismiss()
+            return@LaunchedEffect
+        }
+        val result = snackbarHostState.showSnackbar(
+            message = deletedTemplate.format(snapshot.artist.name),
+            actionLabel = undoLabel,
+            withDismissAction = false,
+            duration = SnackbarDuration.Indefinite,
+        )
+        if (result == SnackbarResult.ActionPerformed) vm.undoDelete()
+    }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.artists_title)) }) }
+        topBar = { TopAppBar(title = { Text(stringResource(R.string.artists_title)) }) },
+        snackbarHost = { SnackbarHost(snackbarHostState) { Snackbar(it) } },
     ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
@@ -66,10 +104,6 @@ fun ArtistsScreen(
                     value = query,
                     onValueChange = {
                         query = it
-                        // Drives the debounced search-as-you-type path in
-                        // the VM (300 ms). The IME Search action and the
-                        // search button still call submitSearch directly
-                        // for an immediate hit.
                         vm.onQueryChange(it)
                     },
                     label = { Text(stringResource(R.string.artists_search_label)) },
@@ -97,14 +131,21 @@ fun ArtistsScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(rows, key = { it.artist.id }) { row ->
-                    ArtistRowItem(
-                        row = row,
-                        onCheckedChange = { checked -> vm.setWhitelisted(row.artist, checked) },
-                    )
+                    when (row) {
+                        is ArtistRow.Whitelisted -> WhitelistedRow(
+                            row = row,
+                            onSetActive = { active -> vm.setActive(row.artist, active) },
+                            onDelete = { vm.deleteArtist(row.artist) },
+                        )
+                        is ArtistRow.SearchResult -> SearchResultRow(
+                            row = row,
+                            onAdd = { vm.addToWhitelist(row.artist) },
+                        )
+                    }
                 }
             }
 
-            androidx.compose.material3.Button(
+            TextButton(
                 onClick = onBack,
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -115,15 +156,58 @@ fun ArtistsScreen(
 }
 
 @Composable
-private fun ArtistRowItem(
-    row: ArtistRow,
-    onCheckedChange: (Boolean) -> Unit,
+private fun WhitelistedRow(
+    row: ArtistRow.Whitelisted,
+    onSetActive: (Boolean) -> Unit,
+    onDelete: () -> Unit,
 ) {
+    val activeCd = stringResource(
+        if (row.isActive) R.string.artists_active_cd_on else R.string.artists_active_cd_off
+    )
+    val deleteCd = stringResource(R.string.artists_delete_cd, row.artist.name)
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = row.isWhitelisted, onCheckedChange = onCheckedChange)
-        Text(row.artist.name, style = MaterialTheme.typography.bodyLarge)
+        Checkbox(
+            checked = row.isActive,
+            onCheckedChange = onSetActive,
+            modifier = Modifier.semantics { contentDescription = activeCd },
+        )
+        Text(
+            text = row.artist.name,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(
+            onClick = onDelete,
+            modifier = Modifier.semantics { contentDescription = deleteCd },
+        ) {
+            Text("🗑", style = MaterialTheme.typography.titleMedium)
+        }
+    }
+}
+
+@Composable
+private fun SearchResultRow(
+    row: ArtistRow.SearchResult,
+    onAdd: () -> Unit,
+) {
+    val addCd = stringResource(R.string.artists_add_cd, row.artist.name)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = row.artist.name,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(
+            onClick = onAdd,
+            modifier = Modifier.semantics { contentDescription = addCd },
+        ) {
+            Text("➕", style = MaterialTheme.typography.titleMedium)
+        }
     }
 }

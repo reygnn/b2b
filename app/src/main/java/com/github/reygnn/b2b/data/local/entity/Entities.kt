@@ -9,6 +9,12 @@ data class WhitelistedArtistEntity(
     val name: String,
     val imageUrl: String?,
     val addedAtEpochMs: Long,
+    // When false, [com.github.reygnn.b2b.domain.usecase.PickNextTrackUseCase]
+    // skips this artist's tracks via the JOIN in [com.github.reygnn.b2b.data.local.dao.PoolTrackDao]
+    // queries. The pool retains the tracks so a re-activate is instant; the
+    // periodic sync ignores inactive rows to avoid burning API quota on
+    // currently-unused artists. Schema v2.
+    val isActive: Boolean = true,
 )
 
 @Entity(tableName = "pool_track")

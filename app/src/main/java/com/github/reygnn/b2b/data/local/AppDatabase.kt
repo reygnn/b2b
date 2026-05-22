@@ -15,8 +15,8 @@ import com.github.reygnn.b2b.data.local.entity.WhitelistedArtistEntity
         PoolTrackEntity::class,
         RecentlyPlayedEntity::class,
     ],
-    version = 1,
-    exportSchema = false,
+    version = 2,
+    exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun whitelistDao(): WhitelistDao

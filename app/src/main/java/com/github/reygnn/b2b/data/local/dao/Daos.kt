@@ -18,8 +18,20 @@ interface WhitelistDao {
     @Query("SELECT id FROM whitelisted_artist")
     suspend fun allIds(): List<String>
 
+    /**
+     * Only the active subset of [allIds]. Used by [com.github.reygnn.b2b.work.PoolSyncWorker]
+     * to decide which artists to fetch from Spotify — inactive artists keep
+     * their existing pool slice but are not refreshed (the user explicitly
+     * paused them).
+     */
+    @Query("SELECT id FROM whitelisted_artist WHERE isActive = 1")
+    suspend fun activeIds(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(artist: WhitelistedArtistEntity)
+
+    @Query("UPDATE whitelisted_artist SET isActive = :isActive WHERE id = :id")
+    suspend fun setActive(id: String, isActive: Boolean)
 
     @Query("DELETE FROM whitelisted_artist WHERE id = :id")
     suspend fun delete(id: String)
@@ -49,20 +61,46 @@ abstract class PoolTrackDao {
     abstract suspend fun countForArtist(artistId: String): Int
 
     /**
-     * Random track NOT in the excluded set. The `:excluded` placeholder works
+     * All pool rows belonging to a single artist. Used by the manage-artists
+     * delete-with-undo flow to snapshot the tracks before a [deleteByArtist]
+     * so they can be re-upserted if the user taps Undo.
+     */
+    @Query("SELECT * FROM pool_track WHERE artistId = :artistId")
+    abstract suspend fun tracksForArtist(artistId: String): List<PoolTrackEntity>
+
+    /**
+     * Random track NOT in the excluded set, restricted to artists currently
+     * flagged active in [WhitelistDao]. The `:excluded` placeholder works
      * because Room expands the collection at query time.
+     *
+     * The JOIN doubles as a removed-artist guard: between
+     * `whitelistDao.delete(artistId)` and the subsequent
+     * `poolRepo.deleteTracksForArtist(artistId)` (in
+     * [com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl.removeFromWhitelist])
+     * there is a brief window where pool rows still reference the deleted
+     * artist; the inner join silently skips them.
      */
     @Query(
         """
-        SELECT * FROM pool_track
-        WHERE uri NOT IN (:excluded)
+        SELECT pt.* FROM pool_track pt
+        INNER JOIN whitelisted_artist wa ON pt.artistId = wa.id
+        WHERE wa.isActive = 1
+          AND pt.uri NOT IN (:excluded)
         ORDER BY RANDOM()
         LIMIT 1
         """
     )
     abstract suspend fun randomExcluding(excluded: List<String>): PoolTrackEntity?
 
-    @Query("SELECT * FROM pool_track ORDER BY RANDOM() LIMIT 1")
+    @Query(
+        """
+        SELECT pt.* FROM pool_track pt
+        INNER JOIN whitelisted_artist wa ON pt.artistId = wa.id
+        WHERE wa.isActive = 1
+        ORDER BY RANDOM()
+        LIMIT 1
+        """
+    )
     abstract suspend fun random(): PoolTrackEntity?
 
     @Query("DELETE FROM pool_track WHERE artistId NOT IN (:keep)")

@@ -39,9 +39,9 @@ class PoolSyncWorkerTest {
             coVerify(exactly = 1) { poolRepo.deleteTracksForRemovedArtists(emptySet()) }
         }
 
-    @Test fun `fetches tracks for each whitelisted artist and prunes others`() =
+    @Test fun `fetches tracks for each active artist and prunes against the full whitelist`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns listOf("a1", "a2")
+            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
                 Outcome.Success(listOf(track("t1", "a1")))
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
@@ -61,9 +61,30 @@ class PoolSyncWorkerTest {
             coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
         }
 
+    @Test fun `inactive artists are skipped during fetch but their tracks survive the prune`() =
+        runTest(mainRule.testScheduler) {
+            // Pins the lazy-stays design: an inactive artist contributes to
+            // [WhitelistDao.allIds] (so its tracks are retained by the prune)
+            // but is excluded from [WhitelistDao.activeIds] (so we don't burn
+            // an API call refreshing tracks the picker is currently ignoring).
+            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1"))
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(listOf(track("t1", "a1")))
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            // a1 was fetched; a2 was not.
+            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a2") }
+            // The prune set covers both — a2's pool slice survives because
+            // it is still in the whitelist, just inactive.
+            coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
+        }
+
     @Test fun `per-artist sync swaps the pool slice atomically`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns listOf("a1")
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
                 Outcome.Success(listOf(track("t1", "a1")))
 
@@ -81,7 +102,7 @@ class PoolSyncWorkerTest {
 
     @Test fun `when rate limited then delays and succeeds on next attempt`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns listOf("a1")
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returnsMany listOf(
                 Outcome.Error.RateLimited(retryAfterSeconds = 2),
                 Outcome.Success(listOf(track("t1", "a1"))),
@@ -96,7 +117,7 @@ class PoolSyncWorkerTest {
 
     @Test fun `when rate limit retry-after exceeds cap then defers to WorkManager retry`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns listOf("a1")
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
             // Spotify sometimes hands out absurdly long Retry-After values
             // after sustained abuse — capped, we hand off to WorkManager.
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
@@ -111,7 +132,7 @@ class PoolSyncWorkerTest {
 
     @Test fun `when rate limited beyond budget then retries`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns listOf("a1")
+            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
                 Outcome.Error.RateLimited(retryAfterSeconds = 1)
 
@@ -122,7 +143,7 @@ class PoolSyncWorkerTest {
         }
 
     @Test fun `when network error then retries`() = runTest(mainRule.testScheduler) {
-        coEvery { dao.allIds() } returns listOf("a1")
+        stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
         coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns Outcome.Error.Network
 
         val result = build().doWork()
@@ -132,12 +153,17 @@ class PoolSyncWorkerTest {
     }
 
     @Test fun `when unauthenticated then fails`() = runTest(mainRule.testScheduler) {
-        coEvery { dao.allIds() } returns listOf("a1")
+        stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
         coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns Outcome.Error.Unauthenticated
 
         val result = build().doWork()
 
         assertThat(result).isInstanceOf(ListenableWorker.Result.Failure::class.java)
+    }
+
+    private fun stubIds(allIds: List<String>, activeIds: List<String>) {
+        coEvery { dao.allIds() } returns allIds
+        coEvery { dao.activeIds() } returns activeIds
     }
 
     private fun build(): PoolSyncWorker = PoolSyncWorker(

@@ -25,6 +25,12 @@
     <string name="artists_title">Artists</string>
     <string name="artists_search_label">Search artists</string>
     <string name="artists_back">Back</string>
+    <string name="artists_active_cd_on">Active for random pick — tap to pause</string>
+    <string name="artists_active_cd_off">Paused — tap to use for random pick</string>
+    <string name="artists_delete_cd">Remove %1$s from the whitelist</string>
+    <string name="artists_add_cd">Add %1$s to the whitelist</string>
+    <string name="artists_deleted_snackbar">%1$s removed</string>
+    <string name="artists_undo">Undo</string>
 
     <!-- Status card -->
     <string name="next_label">Next</string>

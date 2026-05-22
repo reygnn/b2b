@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.github.reygnn.b2b.data.auth.PkceAuthManager
 import com.github.reygnn.b2b.data.auth.TokenStore
 import com.github.reygnn.b2b.data.auth.TokenStoreImpl
+import com.github.reygnn.b2b.data.local.ALL_MIGRATIONS
 import com.github.reygnn.b2b.data.local.AppDatabase
 import com.github.reygnn.b2b.data.local.dao.PoolTrackDao
 import com.github.reygnn.b2b.data.local.dao.RecentlyPlayedDao
@@ -73,7 +74,9 @@ object DatabaseModule {
 
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "b2b.db").build()
+        Room.databaseBuilder(context, AppDatabase::class.java, "b2b.db")
+            .addMigrations(*ALL_MIGRATIONS)
+            .build()
 
     @Provides fun whitelistDao(db: AppDatabase): WhitelistDao = db.whitelistDao()
     @Provides fun poolTrackDao(db: AppDatabase): PoolTrackDao = db.poolTrackDao()

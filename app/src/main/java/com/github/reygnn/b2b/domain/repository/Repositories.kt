@@ -9,6 +9,18 @@ interface ArtistRepository {
     fun observeWhitelist(): Flow<List<Artist>>
     suspend fun searchArtists(query: String): Outcome<List<Artist>>
     suspend fun addToWhitelist(artist: Artist)
+
+    /**
+     * Toggle whether the random picker currently uses this artist. The
+     * artist remains in the whitelist; its existing pool tracks stay in
+     * place and become visible/invisible to the picker via the JOIN in
+     * [com.github.reygnn.b2b.data.local.dao.PoolTrackDao]. The next
+     * [com.github.reygnn.b2b.work.PoolSyncWorker] cycle skips inactive
+     * artists, so re-activating after a long pause may read up-to-24h
+     * stale track lists until the following sync catches up.
+     */
+    suspend fun setActive(artistId: String, isActive: Boolean)
+
     suspend fun removeFromWhitelist(artistId: String)
     suspend fun fetchAllTrackUrisForArtist(artistId: String): Outcome<List<Track>>
 }
@@ -21,6 +33,14 @@ interface PoolRepository {
     suspend fun randomTrackExcluding(excludedUris: Set<String>): Track?
     suspend fun deleteTracksForRemovedArtists(currentArtistIds: Set<String>)
     suspend fun deleteTracksForArtist(artistId: String)
+
+    /**
+     * Snapshot every pool track currently associated with [artistId]. The
+     * manage-artists screen calls this before a trash-confirm so it can
+     * re-upsert the same rows if the user taps Undo within the snackbar
+     * window. Returns an empty list when the artist has no tracks (yet).
+     */
+    suspend fun tracksForArtist(artistId: String): List<Track>
 
     /**
      * Atomic replacement of an artist's slice of the pool: delete the

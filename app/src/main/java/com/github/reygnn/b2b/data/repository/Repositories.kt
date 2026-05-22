@@ -145,7 +145,7 @@ class ArtistRepositoryImpl @Inject constructor(
 
     override fun observeWhitelist(): Flow<List<Artist>> =
         dao.observeAll().map { rows ->
-            rows.map { Artist(it.id, it.name, it.imageUrl) }
+            rows.map { Artist(it.id, it.name, it.imageUrl, it.isActive) }
         }
 
     override suspend fun searchArtists(query: String): Outcome<List<Artist>> = withContext(io) {
@@ -159,15 +159,29 @@ class ArtistRepositoryImpl @Inject constructor(
     }
 
     override suspend fun addToWhitelist(artist: Artist) = withContext(io) {
+        // New whitelist members are always active; an explicit
+        // [setActive] toggle is the only way to flip the flag afterwards.
+        // Setting it here means a re-add of a previously-inactive artist
+        // resets to active — that matches the user gesture (they tapped
+        // the plus button, they want the artist used).
         dao.upsert(
             WhitelistedArtistEntity(
                 id = artist.id,
                 name = artist.name,
                 imageUrl = artist.imageUrl,
                 addedAtEpochMs = System.currentTimeMillis(),
+                isActive = true,
             )
         )
         poolSyncTrigger.triggerAfterWhitelistChange()
+    }
+
+    override suspend fun setActive(artistId: String, isActive: Boolean) = withContext(io) {
+        dao.setActive(artistId, isActive)
+        // No sync trigger on either edge. Activating relies on the existing
+        // pool slice (lazy — may be up to 24 h stale until the next periodic
+        // run); deactivating just gates the picker and keeps the slice for
+        // a cheap re-activation later.
     }
 
     override suspend fun removeFromWhitelist(artistId: String) = withContext(io) {
@@ -306,6 +320,18 @@ class PoolRepositoryImpl @Inject constructor(
             if (currentArtistIds.isEmpty()) dao.deleteAll()
             else dao.deleteWhereArtistNotIn(currentArtistIds.toList())
         }
+
+    override suspend fun tracksForArtist(artistId: String): List<Track> = withContext(io) {
+        dao.tracksForArtist(artistId).map {
+            Track(
+                uri = it.uri,
+                name = it.name,
+                artistId = it.artistId,
+                artistName = it.artistName,
+                durationMs = it.durationMs,
+            )
+        }
+    }
 
     override suspend fun deleteTracksForArtist(artistId: String) =
         withContext(io) { dao.deleteByArtist(artistId) }

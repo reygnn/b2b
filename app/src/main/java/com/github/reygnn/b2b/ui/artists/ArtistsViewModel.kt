@@ -4,10 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
+import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
+import com.github.reygnn.b2b.domain.repository.PoolRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -16,28 +19,43 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.launchIn
 import javax.inject.Inject
 
 /**
- * Row in the artists list: an [Artist] plus a flag for whether it currently
- * sits in the whitelist. The UI maps this to a checkbox state.
+ * One row in the manage-artists list. The two subtypes carry different
+ * affordances:
+ *  - [Whitelisted] renders a checkbox bound to [Whitelisted.isActive] (toggle
+ *    "use for random pick") and a trash button (remove from the whitelist
+ *    entirely, with undo).
+ *  - [SearchResult] renders a "+" button that adds the artist to the
+ *    whitelist (always as active).
+ *
+ * Search hits whose id is already in the whitelist are filtered out upstream
+ * — only one row per artist is ever shown.
  */
-data class ArtistRow(
-    val artist: Artist,
-    val isWhitelisted: Boolean,
-)
+sealed interface ArtistRow {
+    val artist: Artist
+
+    data class Whitelisted(override val artist: Artist, val isActive: Boolean) : ArtistRow
+    data class SearchResult(override val artist: Artist) : ArtistRow
+}
 
 /**
- * Backs the dedicated "manage artists" screen. Merges the persistent
- * whitelist (from the repo) with the most recent Spotify search results
- * into a single list with checkbox semantics — whitelisted entries are
- * pinned on top, search hits follow underneath, and search hits that are
- * already in the whitelist are deduplicated out so we don't render the
- * same artist twice.
+ * Snapshot of an artist + their pool tracks at the moment the user tapped
+ * the trash button. Held in [ArtistsViewModel.deletedSnapshot] for the
+ * duration of the undo snackbar; cleared either by [ArtistsViewModel.undoDelete]
+ * (which re-inserts the snapshot) or by the snackbar timeout firing.
+ */
+data class DeletedArtistSnapshot(val artist: Artist, val tracks: List<Track>)
+
+/**
+ * Backs the dedicated "manage artists" screen. Two row types are rendered
+ * (whitelisted with an active-checkbox + trash, search-results with a plus
+ * button); see [ArtistRow].
  *
  * Search is fired via two paths:
  *   - [onQueryChange] from `TextField.onValueChange` runs through a
@@ -45,11 +63,20 @@ data class ArtistRow(
  *     keystroke;
  *   - [submitSearch] from the IME Search action / search button bypasses
  *     the debounce for an immediate hit.
+ *
+ * Trash-with-undo: [deleteArtist] snapshots the artist + their pool tracks,
+ * removes them from the repo, and exposes the snapshot via
+ * [deletedSnapshot]. The UI subscribes to that flow to render a snackbar;
+ * tapping Undo calls [undoDelete] which re-upserts. After
+ * [UNDO_SNACKBAR_MS] the snapshot clears itself and the undo is no longer
+ * possible (the worker's next prune will remove the now-orphan tracks
+ * either way).
  */
 @OptIn(FlowPreview::class) // debounce(Long) is still @FlowPreview in coroutines 1.10.2.
 @HiltViewModel
 class ArtistsViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
+    private val poolRepo: PoolRepository,
 ) : ViewModel() {
 
     // Eagerly collected so the combined `displayedArtists` always has a
@@ -78,38 +105,15 @@ class ArtistsViewModel @Inject constructor(
     private val _queryInput = MutableStateFlow("")
 
     // Anchor for de-duplicating the debounced search pipeline against the
-    // query that was last actually issued to the repo. Three cases this
-    // guards against, and one case where it deliberately gets reset:
-    //
-    //  1. "type abc, type d, delete d" within a single debounce window —
-    //     debounce emits "abc" after the silence; without this filter we'd
-    //     re-issue the same search we already ran.
-    //  2. "submitSearch('abc') then a delayed debounce of 'abc' lands 300 ms
-    //     later" — submitSearch sets the anchor synchronously, the debounce
-    //     emit is then filtered out.
-    //  3. "type abc → search → select-all → retype same abc" — no clear
-    //     happened, so the anchor still holds and the second emit is
-    //     dropped. Re-running the same search without user intent is
-    //     wasted work.
-    //
-    // Reset paths (anchor goes back to null so the next identical query
-    // does re-fire):
-    //  - onQueryChange("") — the user explicitly cleared.
-    //  - Search returned Outcome.Error AND the error type passes
-    //    [shouldResetAnchorOn] — currently Network or Unknown, i.e. failures
-    //    where retrying the same query has a realistic chance of succeeding
-    //    without external action. RateLimited and Unauthenticated do NOT
-    //    reset; see [shouldResetAnchorOn] for the rationale.
-    //
-    // We deliberately do NOT use `distinctUntilChanged` after `debounce`: that
-    // operator keeps a private "last emitted" state that we cannot reset, and
-    // it would incorrectly suppress the legitimate "clear → retype same
-    // query" case. The anchor pattern lets us reset on demand.
-    //
-    // Single-threaded access: viewModelScope dispatches on Main.immediate;
-    // tests share the same dispatcher via MainDispatcherRule. No @Volatile
-    // needed.
+    // query that was last actually issued to the repo. See the patched-in
+    // documentation in [runSearch] and the rule table in [shouldResetAnchorOn]
+    // for the reset policy.
     private var lastSearchedQuery: String? = null
+
+    private val _deletedSnapshot = MutableStateFlow<DeletedArtistSnapshot?>(null)
+    /** Non-null while the undo snackbar should be visible. */
+    val deletedSnapshot: StateFlow<DeletedArtistSnapshot?> = _deletedSnapshot.asStateFlow()
+    private var undoTimerJob: Job? = null
 
     init {
         _queryInput
@@ -119,25 +123,24 @@ class ArtistsViewModel @Inject constructor(
             .debounce(SEARCH_DEBOUNCE_MS)
             // Blank inputs are handled synchronously in onQueryChange (cancel
             // + state clear, no debounce). The anchor check additionally
-            // drops re-emissions of the most recently searched query — see
-            // [lastSearchedQuery] for the two scenarios this covers.
+            // drops re-emissions of the most recently searched query.
             .filter { it.isNotBlank() && it != lastSearchedQuery }
             .onEach { runSearch(it) }
             .launchIn(viewModelScope)
     }
 
     /**
-     * Merged display list. Re-derived from the two source flows; the UI
-     * just renders, no further logic needed.
+     * Merged display list. Whitelisted rows on top (most recently added
+     * first), then search hits that aren't already in the whitelist.
      */
     val displayedArtists: StateFlow<List<ArtistRow>> = combine(
         whitelisted, _searchResults,
     ) { wl, sr ->
         val whitelistedIds = wl.mapTo(mutableSetOf()) { it.id }
-        val whitelistedRows = wl.map { ArtistRow(it, isWhitelisted = true) }
+        val whitelistedRows = wl.map { ArtistRow.Whitelisted(it, it.isActive) }
         val searchRows = sr
             .filter { it.id !in whitelistedIds }
-            .map { ArtistRow(it, isWhitelisted = false) }
+            .map { ArtistRow.SearchResult(it) }
         whitelistedRows + searchRows
     }.stateIn(
         scope = viewModelScope,
@@ -147,17 +150,9 @@ class ArtistsViewModel @Inject constructor(
 
     private var searchJob: Job? = null
 
-    /**
-     * Forward an updated query string. Empty/blank input clears search
-     * results synchronously; non-blank input is debounced before hitting
-     * Spotify (see [SEARCH_DEBOUNCE_MS]).
-     */
+    /** Forward a TextField change. Blank input clears state synchronously. */
     fun onQueryChange(query: String) {
         if (query.isBlank()) {
-            // Cancel any in-flight or pending search and clear state
-            // immediately — no debounce on the clear path. Also reset the
-            // de-dupe anchor so a "clear → retype identical query" sequence
-            // re-runs the search (the user signalled intent by clearing).
             searchJob?.cancel()
             lastSearchedQuery = null
             _searchResults.value = emptyList()
@@ -167,42 +162,17 @@ class ArtistsViewModel @Inject constructor(
         _queryInput.value = query
     }
 
-    /**
-     * Fire a search immediately, bypassing the debounce. Used by the IME
-     * Search action / explicit submit button so the user is not held up
-     * by the debounce window when they've signalled intent.
-     */
+    /** Fire a search immediately, bypassing the debounce. */
     fun submitSearch(query: String) {
         if (query.isBlank()) {
             onQueryChange(query)
             return
         }
-        // Sync the debounced flow's value with the submitted query. Two cases
-        // this guards against:
-        //
-        //  1. Typing-then-submit: prior keystrokes left a debounce timer
-        //     armed for an older value (e.g. "anni" while we submit "annie").
-        //     Without this assignment, the timer would fire "anni" 300 ms
-        //     later and the anchor filter ("annie") would NOT drop it →
-        //     stale duplicate search. With the assignment, the timer is
-        //     re-armed with "annie", and when it fires the anchor catches it.
-        //
-        //  2. Programmatic submit without typing: a hypothetical "search
-        //     these artists" deep-link or saved-query shortcut calls
-        //     submitSearch without _queryInput being in sync. Same fix.
-        //
-        // When _queryInput is already at `query`, the assignment is a no-op
-        // (StateFlow dedupes), but the anchor set in runSearch below still
-        // catches any pre-armed timer firing the same value.
         _queryInput.value = query
         runSearch(query)
     }
 
     private fun runSearch(query: String) {
-        // Anchor the de-dupe filter on the query we are about to issue. Must
-        // be set BEFORE launching the coroutine so that a delayed debounce
-        // emit that lands while the HTTP call is still in flight is filtered
-        // out, not re-fired.
         lastSearchedQuery = query
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
@@ -215,32 +185,6 @@ class ArtistsViewModel @Inject constructor(
                 is Outcome.Error -> {
                     _searchResults.value = emptyList()
                     _searchError.value = describeError(r)
-                    // Selective anchor reset on failure. The reset enables
-                    // retry-by-retyping (the user keeps the query in the
-                    // field, types a char and deletes it; the next debounce
-                    // fires again because the anchor is null). But that is
-                    // only the right UX for failures where retrying the
-                    // identical query *might* succeed — i.e. transient or
-                    // opaque ones.
-                    //
-                    // We deliberately do NOT reset on:
-                    //   - RateLimited: Spotify just told us the exact wait
-                    //     time; re-firing on every keystroke would prolong
-                    //     the penalty window. The error message surfaces
-                    //     `retryAfterSeconds`; the user can wait and use the
-                    //     submit button (which bypasses the anchor) when
-                    //     ready.
-                    //   - Unauthenticated: re-typing won't fix a broken
-                    //     auth state. The user needs to re-login (the
-                    //     AuthInterceptor / nav graph handles routing on
-                    //     401 in practice). Hammering /search with the same
-                    //     stale token just burns 401 round-trips.
-                    //
-                    // The narrow race for Network/Unknown — user types the
-                    // same query within the 300 ms debounce window while
-                    // the failure is still settling — would cause at most
-                    // one duplicate searchArtists call. Acceptable trade
-                    // for the better retry UX.
                     if (shouldResetAnchorOn(r)) {
                         lastSearchedQuery = null
                     }
@@ -250,35 +194,68 @@ class ArtistsViewModel @Inject constructor(
         }
     }
 
+    /** Search-result row "+" button: add as active. */
+    fun addToWhitelist(artist: Artist) {
+        viewModelScope.launch { artistRepo.addToWhitelist(artist) }
+    }
+
+    /** Whitelist-row checkbox: toggle whether the random picker uses this artist. */
+    fun setActive(artist: Artist, isActive: Boolean) {
+        viewModelScope.launch { artistRepo.setActive(artist.id, isActive) }
+    }
+
     /**
-     * Toggled by the checkbox. `checked = true` adds to the whitelist (which
-     * also kicks off a one-shot pool sync); `false` removes and prunes the
-     * removed artist's pool slice inline.
+     * Whitelist-row trash button. Snapshots the artist + tracks, removes from
+     * the repo, opens the undo window. A second [deleteArtist] within the
+     * window finalises the previous deletion (cancels its undo) before
+     * starting a new one — we don't queue multiple snapshots.
      */
-    fun setWhitelisted(artist: Artist, checked: Boolean) {
+    fun deleteArtist(artist: Artist) {
+        // Finalise any pending snapshot so its tracks don't shadow the new
+        // delete's undo state. Cancelling the timer is enough; the previous
+        // snapshot's tracks are already gone from the repo.
+        undoTimerJob?.cancel()
+        _deletedSnapshot.value = null
+
         viewModelScope.launch {
-            if (checked) artistRepo.addToWhitelist(artist)
-            else artistRepo.removeFromWhitelist(artist.id)
+            val tracks = poolRepo.tracksForArtist(artist.id)
+            artistRepo.removeFromWhitelist(artist.id)
+            _deletedSnapshot.value = DeletedArtistSnapshot(artist, tracks)
+            undoTimerJob = launch {
+                delay(UNDO_SNACKBAR_MS)
+                // Only clear if it's still the same snapshot we set above.
+                // If undoDelete fired in the meantime, the field is already
+                // null and we don't want to clobber a future snapshot.
+                if (_deletedSnapshot.value?.artist?.id == artist.id) {
+                    _deletedSnapshot.value = null
+                }
+            }
         }
     }
 
     /**
-     * Whether a failed search should drop the de-dupe anchor and let the
-     * user retry by simply re-typing the same query. True only for failure
-     * modes where the next attempt for the identical query has a realistic
-     * chance of succeeding without external action; see the `runSearch`
-     * error branch for the per-case rationale.
+     * Reinsert the most recently deleted artist + their tracks. No-op if the
+     * undo window has already elapsed (the snapshot is null in that case).
      */
+    fun undoDelete() {
+        val snapshot = _deletedSnapshot.value ?: return
+        _deletedSnapshot.value = null
+        undoTimerJob?.cancel()
+        viewModelScope.launch {
+            // Restore the artist as active. The original active state isn't
+            // re-applied: deletion is rare enough that "restore" defaults to
+            // "ready to use again" feel right; if the user wanted the
+            // restored artist inactive, the checkbox is one tap away.
+            artistRepo.addToWhitelist(snapshot.artist)
+            poolRepo.upsertTracks(snapshot.tracks)
+        }
+    }
+
     private fun shouldResetAnchorOn(error: Outcome.Error): Boolean = when (error) {
         is Outcome.Error.Network -> true
         is Outcome.Error.Unknown -> true
-        // Spotify told us how long to wait — don't undermine that by
-        // re-firing on every keystroke.
         is Outcome.Error.RateLimited -> false
-        // Auth needs a re-login, not a re-type.
         is Outcome.Error.Unauthenticated -> false
-        // Player-state errors; not produced by /search in practice, but
-        // exhaustive for the sealed hierarchy. Treat conservatively.
         is Outcome.Error.NotPremium -> false
         is Outcome.Error.NoActiveDevice -> false
     }
@@ -294,5 +271,6 @@ class ArtistsViewModel @Inject constructor(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MS = 300L
+        const val UNDO_SNACKBAR_MS = 5_000L
     }
 }

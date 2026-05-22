@@ -66,6 +66,18 @@ android {
         }
     }
 
+    // Room schema export — pinned JSON snapshots per database version live in
+    // VCS under app/schemas/ so migration tests can diff against the on-disk
+    // expectation (see WhitelistDao migration test). Required for any
+    // [androidx.room.AutoMigration] or [androidx.room.testing.MigrationTestHelper]
+    // path; harmless when not used.
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",

@@ -60,12 +60,17 @@ class B2BApp : Application(), Configuration.Provider {
             // pathological single-tick retry.
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
             .build()
-        // KEEP: if a periodic sync is already enqueued (e.g. across process
-        // restarts), don't reset its schedule. The unique name guarantees a
-        // single PoolSyncWorker chain regardless of how often onCreate runs.
+        // UPDATE (WorkManager 2.8+): if a periodic sync is already enqueued
+        // under this unique name, adopt the new spec — interval / constraints
+        // / backoff — without cancelling the schedule. This is what makes
+        // version upgrades take effect: when 0.5.9 → 0.6.0 changed the
+        // interval from 24 h to 15 min, KEEP silently ignored the new
+        // interval because an existing schedule was present, leaving users
+        // on the old 24 h cadence. UPDATE is the right policy for "a
+        // single chain whose spec evolves with the app".
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             PoolSyncWorkNames.PERIODIC,
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.UPDATE,
             request,
         )
     }

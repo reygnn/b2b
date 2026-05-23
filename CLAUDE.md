@@ -15,6 +15,7 @@ automatically at session start. Keep it short and actionable.
 For test details, see `app/src/test/java/com/github/reygnn/b2b/TESTING_CONVENTIONS.kt`.
 For deprecated-endpoint policy, see `docs/adr/0002-spotify-api-deprecation-handling.md`.
 For the dispatcher-rule rationale, see `docs/adr/0001-single-dispatcher-test-convention.md`.
+For the trickle-sync design, see `docs/adr/0003-trickle-pool-sync.md`.
 b2b is a sibling to **chiaroscuro** (M3 / Android-16-only template) and
 **Lobber** (toolchain + gradle skeleton); look there for patterns rather
 than re-inventing.
@@ -69,7 +70,7 @@ app/src/main/java/com/github/reygnn/b2b/
     auth/                    PkceAuthManager (OAuth flow), TokenStore (encrypted
                              prefs).
     repository/              Concrete impls — DTO→domain mapping, IO dispatch.
-  work/PoolSyncWorker.kt     Periodic 24h sync, whitelist→albums→tracks→pool.
+  work/PoolSyncWorker.kt     Trickle: 15 min tick, one artist per tick (ADR-0003).
   service/                   PlaybackOrchestratorService (foreground, mediaPlayback).
   playback/                  PlaybackOrchestrator + PlayerStateSource (incl.
                              AppRemotePlayerStateSource).
@@ -147,14 +148,19 @@ do not throw across layer boundaries.
    the `PlayerStateSource` interface so the orchestrator stays
    Android-free and JVM-testable.
 
-4. **`PoolSyncWorker` rate-limit handling: in-run `delay`, not
-   `Result.retry()`.** When `fetchAllTrackUrisForArtist(...)` returns
-   `Outcome.Error.RateLimited(retryAfterSeconds)`, prefer
-   `delay(retryAfterSeconds * 1000L)` and continue in the same run.
-   Spotify's rate-limit window is ~30 s; WorkManager's exponential
-   backoff starts at 30 s and grows. `Result.retry()` is at best equal,
-   usually slower, and drops the artist-by-artist progress accumulated
-   so far. Reserve `Result.retry()` for `Outcome.Error.Network`.
+4. **`PoolSyncWorker` is a one-artist-per-tick trickle.** Each periodic
+   tick picks exactly one artist via `WhitelistDao.pickNextToSync(floor)`
+   (never-synced first, then stalest-past-floor) and refreshes its slice.
+   There is no all-artists loop, no inter-artist cooldown, no in-run
+   429-delay, no per-artist budget, no cap, no force-flag, no manual
+   sync lane. Spotify's documented 30 s rolling rate-limit window
+   cannot host two artist-fetches by construction (tick cadence is
+   15 min, the WorkManager periodic floor). On 429: record to
+   `RateLimitStore` so the UI shows a countdown, then `Result.retry()`
+   and let WorkManager backoff handle the spacing. On Network: same.
+   On Unauthenticated / other terminal errors: `Result.failure()` and
+   wait for the next periodic occurrence. See ADR-0003 for the
+   2026-05-22/23 incident that motivated this redesign.
 
 5. **Dispatchers via Hilt qualifiers.** Production code injects
    `CoroutineDispatcher` parameters annotated with `@IoDispatcher`,

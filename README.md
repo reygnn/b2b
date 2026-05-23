@@ -88,16 +88,12 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    Search results have "+" buttons for adding. Whitelist entries at the
    top of the list have an active checkbox (whether the random picker
    currently uses them — toggling is local, no sync) and a 🗑 icon for
-   permanent removal with a 5 s undo snackbar. Adds **no longer** trigger
-   an automatic sync (that path used to run straight into Spotify rate
-   limits when several artists were added in quick succession). Instead,
-   the artists screen has an explicit **"Sync now"** button; the 24 h
-   periodic worker still runs in any case. While a Spotify rate limit is
-   active the button is hard-disabled (label: "Sync blocked — rate
-   limit active") — the override lives in the Settings screen, behind
-   a warning dialog. Inactive artists keep their pool tracks for
-   fast reactivation; the next sync skips them (no API usage), and the
-   picker filters them out via a JOIN on `whitelisted_artist.isActive = 1`.
+   permanent removal with a 5 s undo snackbar. There is no "Sync now"
+   button — the trickle worker picks up newly-added artists on its own
+   15 min cadence (ADR-0003). Inactive artists keep their pool tracks
+   for fast reactivation; the trickle skips them (no API usage), and
+   the picker filters them out via a JOIN on
+   `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` starts as a foreground
    service, connects via App Remote to the local Spotify instance, and
    observes `PlayerState`. Position-based timer:
@@ -128,16 +124,10 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    (newest on top). Sufficient for a "what just happened?" diagnosis
    without `adb logcat`. The buffer is wiped on process death — it is
    intentionally not a persistence mechanism.
-8. Settings: "Sync pool now" (REPLACE policy, its own unique-work lane).
-   If a Spotify rate limit is still running, the click first opens a
-   warning dialog showing the remaining wait plus a "Sync anyway"
-   button, which fires the worker with `inputData.force=true` past its
-   rate-limit skip — deliberately the only override path, so an
-   accidental tap cannot extend Spotify's penalty. "Cancel running
-   sync" is the emergency exit when a worker
-   is stuck (calls `WorkManager.cancelUniqueWork` on all lanes). "Sign
-   out" calls `TokenStore.clear()` and the nav graph routes back to
-   Login.
+8. Settings: just "Sign out" — `TokenStore.clear()` and the nav graph
+   routes back to Login. Since ADR-0003 there is no manual sync,
+   force-override, or cancel-sync affordance on this screen: the
+   trickle handles everything on its own 15 min cadence.
 
 ## Architecture
 
@@ -163,54 +153,42 @@ layer boundaries.
 
 Background components:
 
-- `PoolSyncWorker` (WorkManager): periodic every 24 h on UNMETERED
-  network, plus manual runs from the artists and settings screens.
-  Auto-sync after whitelist-add is deliberately gone — rapid adds used
-  to run straight into Spotify rate limits. Walks the whitelist →
-  `/artists/{id}/albums` → `/albums/{id}/tracks`, filters out tracks
-  that don't list the requested artist (compilations / various-artists
-  releases would otherwise contribute foreign tracks). Per artist, the
-  pool slice is swapped atomically via
-  `PoolTrackDao.replaceTracksForArtist` (`@Transaction` around
-  `deleteByArtist` + `upsertAll`), so a worker kill between delete and
-  insert cannot leave a briefly empty slice that a parallel `pickNext`
-  might read. Hard caps prevent endless pagination (max 100 album
-  pages, max 20 track pages per album, plus a break on `limit == 0`
-  from pathological dev-mode responses).
+- `PoolSyncWorker` (WorkManager): periodic every **15 minutes** on
+  UNMETERED network. Each tick picks **exactly one** active artist and
+  refreshes its pool slice; never more. Selection lives in SQL
+  (`WhitelistDao.pickNextToSync(floorMs)`): never-synced artists first
+  (ordered by `addedAtEpochMs` so the user's add-order is honored),
+  then the artist whose slice is stalest past the 24 h freshness
+  floor. When everything is fresh the tick is a no-op
+  `Result.success()` — no API call, one log line.
 
-  Four-tier rate-limit protection:
+  The slice swap goes via `PoolTrackDao.replaceTracksForArtist`
+  (`@Transaction` around `deleteByArtist` + `upsertAll`) so a worker
+  kill between delete and insert cannot leave the artist briefly empty
+  in the pool. After a successful tick the worker prunes orphan rows
+  (`deleteTracksForRemovedArtists` against the current whitelist) and
+  clears `RateLimitStore`. The artist fetch keeps the same pagination
+  caps as before (max 100 album pages, max 20 track pages per album)
+  and still filters out compilation tracks that don't list the
+  requested artist.
 
-  1. **Active-skip:** at `doWork` entry the worker checks the
-     `RateLimitStore`; if Spotify has announced a wait and the countdown
-     is still running, exit with `Result.success()` and no API call.
-     Issuing a request during the announced wait could be interpreted
-     as hammering and extend the penalty. The Settings override lane
-     sets `inputData.force=true` and bypasses this check.
-  2. **Per-artist freshness skip:** before each artist's fetch,
-     `lastSyncedEpochMsForArtist(id)` is compared against
-     `FRESH_THRESHOLD_MS` (18 h). Fresh slices are left alone — a manual
-     sync a few hours after the periodic run does not burn the entire
-     API quota a second time. `force=true` bypasses this too.
-  3. **Inter-artist cooldown:** between artists that actually hit the
-     API, the worker waits `INTER_ARTIST_DELAY_MS` (30 s). This ensures
-     Spotify's 30 s rolling rate-limit window is empty by the time the
-     next burst starts — two artists never share a window. Force does
-     NOT bypass the cooldown — the override should still treat the API
-     respectfully.
-  4. **In-run 429 handling:** for HTTP 429 with `Retry-After` ≤ 120 s
-     the worker waits in-run via `delay()` (max 3 attempts per artist)
-     and records `(retryAfterSeconds, now)` in the `RateLimitStore`;
-     larger values are handed off to WorkManager backoff (5-min
-     EXPONENTIAL initial, max 5 h). On a successful sync exit the
-     worker clears the store.
+  Rate-limit handling is structural rather than algorithmic: the 15 min
+  cadence is 30× Spotify's documented 30 s rolling rate-limit window,
+  so two artist-fetches cannot share a window by construction. If a 429
+  ever does come back (Spotify-side hiccup, account-level penalty from
+  some other path) the worker records it to `RateLimitStore` for the
+  UI countdown and returns `Result.retry()` — WorkManager's 5 min
+  exponential backoff then spaces the retry without us writing any
+  in-run `delay`. `Outcome.Error.Network` is the same. Other terminal
+  errors return `Result.failure()`; the next 15 min periodic
+  occurrence picks back up.
 
-  Two-tier timeouts: each artist has its own `MAX_PER_ARTIST_DURATION`
-  budget (2 min). A stuck artist only costs its own turn —
-  `withTimeoutOrNull` returns `null`, the log shows
-  `sync: <id> timed out`, the existing pool slice is preserved, and the
-  worker continues with the next artist. `MAX_RUN_DURATION` (30 min) is
-  the outer safety net for non-fetch hangs (DB stall, pathologies
-  outside the fetch path) and should never fire in practice.
+  The previous design (24 h periodic walking every active artist with
+  inter-artist cooldown, manual `MANUAL` lane, `force=true` override
+  dialog, four-tier rate-limit protection) was retired in ADR-0003
+  after a multi-hour Spotify penalty caused by `force=true` persisting
+  across WorkManager backoff retries and two work-lanes running
+  concurrently against the same already-banned artist.
 - `PlaybackOrchestratorService` (foreground, `mediaPlayback`): hosts the
   `PlaybackOrchestrator` (pure Kotlin, testable without Android), which
   consumes a `Flow<PlayerState>` from `PlayerStateSource` and makes
@@ -312,11 +290,8 @@ app/src/main/java/com/github/reygnn/b2b/
     ├── artists/             ArtistsScreen + ViewModel (explicit search,
     │                        active checkbox + trash-with-undo for
     │                        whitelist entries, "+" button for search
-    │                        results, "Sync now" button with rate-limit
-    │                        hard-block)
-    └── settings/            SettingsScreen + ViewModel (manual sync
-                             with rate-limit force-override dialog,
-                             cancel sync, logout)
+    │                        results — no manual sync)
+    └── settings/            SettingsScreen + ViewModel (logout only)
 ```
 
 ## Out of scope
@@ -349,3 +324,4 @@ app/src/main/java/com/github/reygnn/b2b/
 
 - `docs/adr/0001-single-dispatcher-test-convention.md`
 - `docs/adr/0002-spotify-api-deprecation-handling.md`
+- `docs/adr/0003-trickle-pool-sync.md`

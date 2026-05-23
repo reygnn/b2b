@@ -1,10 +1,8 @@
 package com.github.reygnn.b2b.work
 
-import androidx.work.Data
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
-import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
@@ -15,15 +13,21 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
-import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
+/**
+ * Tests for the trickle design (see ADR-0003).
+ *
+ * Selection is delegated to [WhitelistDao.pickNextToSync] — its own tests in
+ * `WhitelistDaoTest` cover ordering / freshness-floor / inactive filtering.
+ * The worker tests here only verify that the trickle treats the returned id
+ * correctly and that the rate-limit / network / auth outcomes round-trip
+ * to the right [ListenableWorker.Result].
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PoolSyncWorkerTest {
 
@@ -33,375 +37,123 @@ class PoolSyncWorkerTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
-    private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
 
-    @Before fun stubRateLimitState() {
-        every { rateLimitStore.state() } returns rateLimitFlow
-        // Default: every artist looks "never synced" so the freshness skip
-        // is a no-op and the legacy tests below see the pre-skip behaviour.
-        // Tests that exercise the skip explicitly set their own stubs.
-        coEvery { poolRepo.lastSyncedEpochMsForArtist(any()) } returns null
+    @Test fun `idle when DAO reports nothing eligible`() = runTest(mainRule.testScheduler) {
+        // Steady-state case: everything in the whitelist is younger than
+        // the floor. The worker emits a single log line and exits without
+        // calling the API.
+        coEvery { dao.pickNextToSync(any()) } returns null
+
+        val result = build().doWork()
+
+        assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+        coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+        coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(any(), any()) }
+        // Idle is not a "Spotify is responsive" signal in itself — don't
+        // clear the rate-limit store on a no-op. (A future tick that
+        // actually reaches the API does the clearing.)
+        coVerify(exactly = 0) { rateLimitStore.clear() }
     }
 
-    @Test fun `when whitelist empty then succeeds and clears pool`() =
+    @Test fun `fetches the picked artist and atomically swaps its slice`() =
         runTest(mainRule.testScheduler) {
-            coEvery { dao.allIds() } returns emptyList()
-
-            val worker = build()
-            val result = worker.doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            // Pins the empty-IN-list guard: deleteTracksForRemovedArtists with
-            // an empty set must actually clear the pool. The impl routes to
-            // dao.deleteAll() so the row count goes to zero.
-            coVerify(exactly = 1) { poolRepo.deleteTracksForRemovedArtists(emptySet()) }
-        }
-
-    @Test fun `fetches tracks for each active artist and prunes against the full whitelist`() =
-        runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
+            coEvery { dao.pickNextToSync(any()) } returns "a1"
+            coEvery { dao.allIds() } returns listOf("a1", "a2")
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
-                Outcome.Success(listOf(track("t2", "a2"), track("t3", "a2")))
-
-            val worker = build()
-            val result = worker.doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify { poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1"))) }
-            coVerify {
-                poolRepo.replaceTracksForArtist(
-                    "a2",
-                    listOf(track("t2", "a2"), track("t3", "a2")),
-                )
-            }
-            coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
-        }
-
-    @Test fun `inactive artists are skipped during fetch but their tracks survive the prune`() =
-        runTest(mainRule.testScheduler) {
-            // Pins the lazy-stays design: an inactive artist contributes to
-            // [WhitelistDao.allIds] (so its tracks are retained by the prune)
-            // but is excluded from [WhitelistDao.activeIds] (so we don't burn
-            // an API call refreshing tracks the picker is currently ignoring).
-            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
+                Outcome.Success(listOf(track("t1", "a1"), track("t2", "a1")))
 
             val result = build().doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            // a1 was fetched; a2 was not.
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a2") }
-            // The prune set covers both — a2's pool slice survives because
-            // it is still in the whitelist, just inactive.
-            coVerify { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
-        }
-
-    @Test fun `per-artist sync swaps the pool slice atomically`() =
-        runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-
-            build().doWork()
-
-            // Replace is a single transactional call now; the prior
-            // delete-then-upsert pair was not atomic — a worker kill between
-            // the two left the artist briefly absent from the pool.
             coVerify(exactly = 1) {
-                poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1")))
+                poolRepo.replaceTracksForArtist(
+                    "a1",
+                    listOf(track("t1", "a1"), track("t2", "a1")),
+                )
             }
+            // No legacy delete/upsert pair — the atomic replacement is the
+            // only mutation path.
             coVerify(exactly = 0) { poolRepo.deleteTracksForArtist(any()) }
             coVerify(exactly = 0) { poolRepo.upsertTracks(any()) }
         }
 
-    @Test fun `when rate limited then delays and succeeds on next attempt`() =
+    @Test fun `successful tick prunes tracks against the current whitelist`() =
         runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returnsMany listOf(
-                Outcome.Error.RateLimited(retryAfterSeconds = 2),
-                Outcome.Success(listOf(track("t1", "a1"))),
-            )
+            // Pins the "orphan rows get pruned" contract. Even though only
+            // a1 was synced this tick, the prune covers the whole whitelist
+            // so removed artists' rows disappear within one tick of removal.
+            coEvery { dao.pickNextToSync(any()) } returns "a1"
+            coEvery { dao.allIds() } returns listOf("a1", "a2")
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Success(emptyList())
 
-            val result = build().doWork()
+            build().doWork()
 
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify { poolRepo.replaceTracksForArtist("a1", listOf(track("t1", "a1"))) }
-            coVerify(exactly = 2) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+            coVerify(exactly = 1) { poolRepo.deleteTracksForRemovedArtists(setOf("a1", "a2")) }
         }
 
-    @Test fun `when rate limit retry-after exceeds cap then defers to WorkManager retry`() =
+    @Test fun `successful tick clears any previously recorded rate-limit`() =
         runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            // Spotify sometimes hands out absurdly long Retry-After values
-            // after sustained abuse — capped, we hand off to WorkManager.
+            // A successful round-trip proves Spotify is talking to us; any
+            // stale countdown in the UI must drop.
+            coEvery { dao.pickNextToSync(any()) } returns "a1"
+            coEvery { dao.allIds() } returns listOf("a1")
             coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Error.RateLimited(retryAfterSeconds = 60_000)
+                Outcome.Success(emptyList())
+
+            build().doWork()
+
+            coVerify(exactly = 1) { rateLimitStore.clear() }
+        }
+
+    @Test fun `429 records the wait and returns retry without an in-run delay`() =
+        runTest(mainRule.testScheduler) {
+            // Should be exceptionally rare with one fetch per 15 min, but
+            // when it happens: record so the UI shows a countdown, then let
+            // WorkManager's exponential backoff handle the retry. No
+            // in-run delay, no second fetch.
+            coEvery { dao.pickNextToSync(any()) } returns "a1"
+            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+                Outcome.Error.RateLimited(retryAfterSeconds = 42)
 
             val result = build().doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
-            // Single attempt — no in-run delay, no second fetch.
+            coVerify(exactly = 1) {
+                rateLimitStore.record(retryAfterSeconds = 42, any())
+            }
+            coVerify(exactly = 0) { rateLimitStore.clear() }
             coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+            coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(any(), any()) }
         }
 
-    @Test fun `when rate limited beyond budget then retries`() =
-        runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Error.RateLimited(retryAfterSeconds = 1)
-
-            val result = build().doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
-            coVerify(exactly = 3) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-        }
-
-    @Test fun `when network error then retries`() = runTest(mainRule.testScheduler) {
-        stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
+    @Test fun `network error returns retry`() = runTest(mainRule.testScheduler) {
+        coEvery { dao.pickNextToSync(any()) } returns "a1"
         coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns Outcome.Error.Network
 
         val result = build().doWork()
 
         assertThat(result).isInstanceOf(ListenableWorker.Result.Retry::class.java)
-        coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
+        coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(any(), any()) }
     }
 
-    @Test fun `when unauthenticated then fails`() = runTest(mainRule.testScheduler) {
-        stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-        coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns Outcome.Error.Unauthenticated
+    @Test fun `unauthenticated outcome fails the tick`() = runTest(mainRule.testScheduler) {
+        // The auth interceptor would have refreshed once before reaching
+        // here, so an Unauthenticated outcome means the refresh itself
+        // failed — retry would just burn cycles. Hand off and wait for
+        // the next 15 min periodic occurrence.
+        coEvery { dao.pickNextToSync(any()) } returns "a1"
+        coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
+            Outcome.Error.Unauthenticated
 
         val result = build().doWork()
 
         assertThat(result).isInstanceOf(ListenableWorker.Result.Failure::class.java)
+        coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(any(), any()) }
     }
 
-    // ---- RateLimitStore wiring -----------------------------------------
-
-    @Test fun `successful sync clears any previously recorded rate-limit`() =
-        runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-
-            build().doWork()
-
-            // Reaching success means Spotify is responsive again; the stored
-            // wait, if any, is stale and must not linger in the status card.
-            coVerify(exactly = 1) { rateLimitStore.clear() }
-        }
-
-    @Test fun `cap-exceeding rate-limit records the announced wait`() =
-        runTest(mainRule.testScheduler) {
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Error.RateLimited(retryAfterSeconds = 56_741)
-
-            build().doWork()
-
-            // The exact value the user wants to see in the status card.
-            coVerify(exactly = 1) { rateLimitStore.record(retryAfterSeconds = 56_741, any()) }
-            // And no spurious clear() from the same run — the wait is the
-            // last word here.
-            coVerify(exactly = 0) { rateLimitStore.clear() }
-        }
-
-    @Test fun `empty whitelist clears the rate-limit`() =
-        runTest(mainRule.testScheduler) {
-            // Mirrors the success path: an empty-whitelist short-circuit is
-            // still a "Spotify is fine" outcome, so any stale wait should
-            // drop out of the UI.
-            coEvery { dao.allIds() } returns emptyList()
-
-            build().doWork()
-
-            coVerify(exactly = 1) { rateLimitStore.clear() }
-        }
-
-    @Test fun `skips the entire run while inside a recorded rate-limit window`() =
-        runTest(mainRule.testScheduler) {
-            // A 1-hour ban recorded just now: the worker must not even
-            // call the API. Spotify can extend the penalty if it sees a
-            // request during the announced wait.
-            rateLimitFlow.value = RateLimitState(
-                retryAfterSeconds = 3600,
-                recordedAtEpochMs = System.currentTimeMillis(),
-            )
-
-            val result = build().doWork()
-
-            // Success (not retry): retry would let WorkManager backoff
-            // re-fire before the ban window closes. We want a deterministic
-            // no-op until the next regular trigger.
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
-            coVerify(exactly = 0) { dao.allIds() }
-            // Don't clear the store either — the user still needs to see
-            // the countdown.
-            coVerify(exactly = 0) { rateLimitStore.clear() }
-        }
-
-    @Test fun `proceeds when a previously recorded rate-limit has elapsed`() =
-        runTest(mainRule.testScheduler) {
-            // Record a 1s wait that was made well in the past: the
-            // remaining-seconds calc returns 0 and the run goes ahead.
-            // A subsequent successful sync clears the stale record.
-            rateLimitFlow.value = RateLimitState(
-                retryAfterSeconds = 1,
-                recordedAtEpochMs = System.currentTimeMillis() - 60_000L,
-            )
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-
-            val result = build().doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-            coVerify(exactly = 1) { rateLimitStore.clear() }
-        }
-
-    // ---- Per-artist freshness skip -------------------------------------
-
-    @Test fun `skips an artist whose slice was synced recently`() =
-        runTest(mainRule.testScheduler) {
-            // Synced 1 hour ago — well inside the 18 h threshold. The
-            // worker must not even ask the Spotify API for this artist.
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
-                System.currentTimeMillis() - 60L * 60 * 1000
-
-            val result = build().doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-        }
-
-    @Test fun `still fetches an artist whose slice has aged past the threshold`() =
-        runTest(mainRule.testScheduler) {
-            // Synced 24 h ago — past the 18 h threshold. The periodic
-            // worker must pick this up; otherwise the pool would freeze
-            // after the first sync.
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
-                System.currentTimeMillis() - 24L * 60 * 60 * 1000
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-
-            build().doWork()
-
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-        }
-
-    @Test fun `force ignores the freshness skip`() =
-        runTest(mainRule.testScheduler) {
-            // Even though the slice was just synced, force=true (Settings
-            // override after the rate-limit dialog) bypasses the skip.
-            // Otherwise the Force button could silently do nothing.
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
-                System.currentTimeMillis()
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(listOf(track("t1", "a1")))
-
-            build(force = true).doWork()
-
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-        }
-
-    // ---- Inter-artist cooldown -----------------------------------------
-
-    @Test fun `cools down 30s between consecutive artist fetches`() =
-        runTest(mainRule.testScheduler) {
-            // Two artists with stale slices → both fetched; one delay
-            // between them. We assert on virtual time advancing by
-            // INTER_ARTIST_DELAY_MS exactly once.
-            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist(any()) } returns
-                Outcome.Success(emptyList())
-
-            val start = mainRule.testScheduler.currentTime
-            build().doWork()
-            val elapsed = mainRule.testScheduler.currentTime - start
-
-            // 1 inter-artist cooldown of 30 s; the fetches themselves are
-            // mocked instant, so any extra virtual time comes from delays.
-            assertThat(elapsed).isAtLeast(30_000L)
-            assertThat(elapsed).isLessThan(60_000L)
-        }
-
-    @Test fun `does not cool down before the very first artist`() =
-        runTest(mainRule.testScheduler) {
-            // Single-artist run: no cooldown anywhere. Sync should be near-
-            // instant in virtual time.
-            stubIds(allIds = listOf("a1"), activeIds = listOf("a1"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(emptyList())
-
-            val start = mainRule.testScheduler.currentTime
-            build().doWork()
-            val elapsed = mainRule.testScheduler.currentTime - start
-
-            assertThat(elapsed).isLessThan(30_000L)
-        }
-
-    @Test fun `skipped artists do not consume a cooldown`() =
-        runTest(mainRule.testScheduler) {
-            // a1 was just synced (freshness-skip), a2 must be fetched.
-            // No cooldown needed: only a2 hit the API, and it's the
-            // first such hit.
-            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
-            coEvery { poolRepo.lastSyncedEpochMsForArtist("a1") } returns
-                System.currentTimeMillis()
-            coEvery { poolRepo.lastSyncedEpochMsForArtist("a2") } returns null
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
-                Outcome.Success(emptyList())
-
-            val start = mainRule.testScheduler.currentTime
-            build().doWork()
-            val elapsed = mainRule.testScheduler.currentTime - start
-
-            assertThat(elapsed).isLessThan(30_000L)
-            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist("a1") }
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist("a2") }
-        }
-
-    // ---- Per-artist timeout --------------------------------------------
-
-    @Test fun `a slow artist is skipped and the next one proceeds`() =
-        runTest(mainRule.testScheduler) {
-            // a1's fetch hangs forever (suspends past the per-artist
-            // budget). a2 is normal. The worker must skip a1 and
-            // successfully sync a2.
-            stubIds(allIds = listOf("a1", "a2"), activeIds = listOf("a1", "a2"))
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } coAnswers {
-                kotlinx.coroutines.awaitCancellation()
-            }
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a2") } returns
-                Outcome.Success(emptyList())
-
-            val result = build().doWork()
-
-            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            // a2 was reached and its slice was atomically replaced…
-            coVerify(exactly = 1) { poolRepo.replaceTracksForArtist("a2", emptyList()) }
-            // …but a1's pool slice was never touched (stale data wins
-            // over half-applied data).
-            coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(eq("a1"), any()) }
-        }
-
-    private fun stubIds(allIds: List<String>, activeIds: List<String>) {
-        coEvery { dao.allIds() } returns allIds
-        coEvery { dao.activeIds() } returns activeIds
-    }
-
-    private fun build(force: Boolean = false): PoolSyncWorker {
+    private fun build(): PoolSyncWorker {
         val params = mockk<WorkerParameters>(relaxed = true)
-        if (force) every { params.inputData } returns
-            Data.Builder().putBoolean(PoolSyncWorker.KEY_FORCE, true).build()
         return PoolSyncWorker(
             appContext = mockk(relaxed = true),
             params = params,

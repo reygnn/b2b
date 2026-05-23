@@ -41,16 +41,23 @@ class B2BApp : Application(), Configuration.Provider {
     }
 
     private fun schedulePoolSync() {
-        val request = PeriodicWorkRequestBuilder<PoolSyncWorker>(24, TimeUnit.HOURS)
+        // 15 minutes is Android's hard floor for PeriodicWorkRequest
+        // (PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS). The trickle
+        // design picks exactly one artist per tick, so any tick spacing
+        // above Spotify's documented 30 s rolling rate-limit window is safe
+        // by construction — 15 min gives a 30× safety factor without
+        // needing self-rescheduling OneTimeWorkRequest plumbing.
+        val request = PeriodicWorkRequestBuilder<PoolSyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.UNMETERED)
                     .build()
             )
-            // 5-minute initial backoff so a transient Spotify hiccup (or
-            // a 429 with too-long Retry-After surfaced as Result.retry())
-            // doesn't make us re-hit the API every 30 s and reinforce
-            // whatever rate-limit caused it. See PoolSyncWorker.
+            // 5-minute initial backoff for Result.retry() (transient network
+            // or the rare 429 that escapes the trickle's burst-free pacing).
+            // The next periodic occurrence happens on the 15 min schedule
+            // regardless, so the backoff exists only to space out a
+            // pathological single-tick retry.
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
             .build()
         // KEEP: if a periodic sync is already enqueued (e.g. across process

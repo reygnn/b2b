@@ -61,11 +61,6 @@
     <string name="artists_label">Artists</string>
     <string name="artists_summary">%1$d aktiv von %2$d total</string>
     <string name="rate_limit_label">Rate-Limit</string>
-    <string name="sync_blocked_rate_limit">Sync gesperrt — Rate-Limit aktiv</string>
-    <string name="rate_limit_dialog_title">Rate-Limit aktiv</string>
-    <string name="rate_limit_dialog_text">Spotify hat eine Wartezeit von %1$s angekündigt. Ein Sync jetzt kann die Strafe verlängern. Trotzdem syncen?</string>
-    <string name="rate_limit_dialog_force">Trotzdem syncen</string>
-    <string name="rate_limit_dialog_cancel">Abbrechen</string>
 
     <string name="ago_seconds">vor %1$ds</string>
     <string name="ago_minutes">vor %1$dmin</string>
@@ -75,11 +70,7 @@
     <!-- Settings -->
     <string name="settings_title">Einstellungen</string>
     <string name="settings_logout">Abmelden</string>
-    <string name="settings_manual_sync">Pool jetzt synchronisieren</string>
-    <string name="settings_cancel_sync">Laufende Synchronisierung abbrechen</string>
     <string name="settings_back">Zurück</string>
-    <string name="sync_enqueued">Sync eingereiht</string>
-    <string name="sync_cancelled">Sync abgebrochen</string>
 
     <!-- Logs -->
     <string name="logs_title">Logs</string>

@@ -61,11 +61,6 @@
     <string name="artists_label">Artists</string>
     <string name="artists_summary">%1$d active of %2$d total</string>
     <string name="rate_limit_label">Rate limit</string>
-    <string name="sync_blocked_rate_limit">Sync blocked — rate limit active</string>
-    <string name="rate_limit_dialog_title">Rate limit active</string>
-    <string name="rate_limit_dialog_text">Spotify announced a wait of %1$s. Syncing now may extend the penalty. Sync anyway?</string>
-    <string name="rate_limit_dialog_force">Sync anyway</string>
-    <string name="rate_limit_dialog_cancel">Cancel</string>
 
     <string name="ago_seconds">%1$ds ago</string>
     <string name="ago_minutes">%1$dmin ago</string>
@@ -75,11 +70,7 @@
     <!-- Settings -->
     <string name="settings_title">Settings</string>
     <string name="settings_logout">Sign out</string>
-    <string name="settings_manual_sync">Sync pool now</string>
-    <string name="settings_cancel_sync">Cancel running sync</string>
     <string name="settings_back">Back</string>
-    <string name="sync_enqueued">Sync enqueued</string>
-    <string name="sync_cancelled">Sync cancelled</string>
 
     <!-- Logs -->
     <string name="logs_title">Logs</string>

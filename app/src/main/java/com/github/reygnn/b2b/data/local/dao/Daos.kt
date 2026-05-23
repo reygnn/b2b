@@ -27,6 +27,42 @@ interface WhitelistDao {
     @Query("SELECT id FROM whitelisted_artist WHERE isActive = 1")
     suspend fun activeIds(): List<String>
 
+    /**
+     * Selects the next active artist that the [com.github.reygnn.b2b.work.PoolSyncWorker]
+     * trickle should refresh on this tick, or `null` if everything is fresh.
+     *
+     * Ordering — oldest first:
+     *  - Never-synced artists (no `pool_track` row → `last_sync IS NULL`) come first
+     *    because SQLite's default ASC order puts `NULL` ahead of every Long value.
+     *  - Among never-synced artists, the one added first (`addedAtEpochMs` ASC)
+     *    wins — FIFO so multiple newly-added artists drain in the order the user
+     *    chose them.
+     *  - Among already-synced artists, the one whose latest pool row is oldest
+     *    (`last_sync ASC`) wins, with `addedAtEpochMs` as tiebreaker on the
+     *    unlikely event of identical timestamps.
+     *
+     * The `[floorMs]` cutoff filters out artists whose slice is younger than
+     * the freshness floor — they don't need a refresh yet, so we skip the tick.
+     * `floorMs = System.currentTimeMillis() - FRESHNESS_FLOOR_MS` (see
+     * [com.github.reygnn.b2b.work.PoolSyncWorker]); rows with `last_sync IS NULL`
+     * always pass the filter.
+     */
+    @Query(
+        """
+        SELECT wa.id FROM whitelisted_artist wa
+        LEFT JOIN (
+            SELECT artistId, MAX(lastSyncedEpochMs) AS last_sync
+            FROM pool_track
+            GROUP BY artistId
+        ) p ON p.artistId = wa.id
+        WHERE wa.isActive = 1
+          AND (p.last_sync IS NULL OR p.last_sync < :floorMs)
+        ORDER BY p.last_sync ASC, wa.addedAtEpochMs ASC
+        LIMIT 1
+        """
+    )
+    suspend fun pickNextToSync(floorMs: Long): String?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(artist: WhitelistedArtistEntity)
 

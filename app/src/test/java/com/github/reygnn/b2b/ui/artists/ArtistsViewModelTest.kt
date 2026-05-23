@@ -1,9 +1,5 @@
 package com.github.reygnn.b2b.ui.artists
 
-import android.content.Context
-import com.github.reygnn.b2b.data.repository.PoolSyncObserver
-import com.github.reygnn.b2b.data.repository.RateLimitState
-import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -13,7 +9,6 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
-import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,20 +25,13 @@ class ArtistsViewModelTest {
 
     @get:Rule val mainRule = MainDispatcherRule()
 
-    private val context: Context = mockk(relaxed = true)
     private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
-    private val poolSyncObserver: PoolSyncObserver = mockk()
-    private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
     private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
-    private val isSyncingFlow = MutableStateFlow(false)
-    private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
 
     @Before fun stub() {
         coEvery { artistRepo.observeWhitelist() } returns whitelistFlow
         coEvery { poolRepo.tracksForArtist(any()) } returns emptyList()
-        every { poolSyncObserver.observeIsSyncing() } returns isSyncingFlow
-        every { rateLimitStore.state() } returns rateLimitFlow
     }
 
     @Test fun `displayedArtists renders whitelisted entries as Whitelisted rows`() =
@@ -328,9 +316,7 @@ class ArtistsViewModelTest {
             coVerify(exactly = 0) { artistRepo.addToWhitelist(a1) }
         }
 
-    private fun newSut() = ArtistsViewModel(
-        context, artistRepo, poolRepo, poolSyncObserver, rateLimitStore,
-    )
+    private fun newSut() = ArtistsViewModel(artistRepo, poolRepo)
 
     private fun artist(id: String, name: String, isActive: Boolean = true) =
         Artist(id = id, name = name, isActive = isActive)

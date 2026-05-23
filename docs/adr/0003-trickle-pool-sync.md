@@ -2,6 +2,7 @@
 
 Status: Accepted
 Date: 2026-05-23
+Last reviewed: 2026-05-23 (active-skip restored; see "Active-skip" below)
 
 ## Context
 
@@ -56,12 +57,21 @@ refreshes at most **one** active artist.
 - Freshness floor: 24 h. If everything has been refreshed inside that
   window the tick is a no-op `Result.success()` — no API call, one log
   line.
+- **Active-skip at `doWork` entry.** If [`RateLimitStore`](../../app/src/main/java/com/github/reygnn/b2b/data/repository/RateLimitStore.kt)
+  reports a non-zero remaining wait, the worker exits `Result.success()`
+  immediately, no API call. Spotify's own documentation says "wait for
+  the number of seconds specified in `Retry-After`"; sending requests
+  during the announced wait is the documented path to penalty extension.
+  This is unconditional — there is no `force` flag, no input-data
+  override, no caller path that bypasses it. (See "Note on the
+  active-skip" below for the design history.)
 - Outcomes:
   - `Outcome.Success` → atomic slice swap + prune-against-current-whitelist
     + `rateLimitStore.clear()`.
-  - `Outcome.Error.RateLimited` → `rateLimitStore.record(seconds)` (the
-    UI countdown still works, passively), then `Result.retry()` with
-    WorkManager's 5 min exponential backoff. No in-run delay.
+  - `Outcome.Error.RateLimited` → `rateLimitStore.record(seconds)`
+    (which arms the next tick's active-skip and the UI countdown),
+    then `Result.retry()` with WorkManager's 5 min exponential backoff.
+    No in-run delay.
   - `Outcome.Error.Network` → `Result.retry()`.
   - Other terminal errors (Unauthenticated, etc.) → `Result.failure()`;
     the next 15 min occurrence picks up.
@@ -79,9 +89,27 @@ What goes away:
 
 What stays:
 
-- `RateLimitStore` — passive UI countdown only. The worker still records
-  on 429 so the home screen shows a wait, but no code path reads the
-  store to gate behaviour (the trickle's cadence already gates that).
+- `RateLimitStore` — both as the active-skip gate (above) and as the
+  source for the home screen's "Rate-Limit: HH:MM:SS" countdown. The
+  worker records on 429 and clears on a successful tick.
+
+## Note on the active-skip
+
+The first revision of this ADR retired the active-skip along with the
+rest of the four-tier protection, on the reasoning that the trickle's
+15 min cadence already kept us safe. That was wrong. Even at 15 min
+spacing, a fresh 429 opens a wait window of hours, during which the
+worker would issue ~four requests per hour into Spotify's announced
+wait — the exact "hammer through the announced penalty" behaviour
+that caused the incident in the first place, just spread out over more
+time.
+
+The flawed pattern in the original incident was not the active-skip
+itself — it was `force=true` letting the user's "Sync anyway" tap
+bypass the gate, and WorkManager preserving that bypass across backoff
+retries. With `force=true` and the entire manual-override surface
+removed, the active-skip has no exception path and can be applied
+unconditionally. That is the safe and Spotify-recommended behaviour.
 
 ## Consequences
 

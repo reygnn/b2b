@@ -18,6 +18,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
@@ -38,11 +39,11 @@ import org.junit.Test
  *     into hours of hammering through an announced penalty.
  *  2. **No in-run `delay()` on `RateLimitedError`.** Virtual time must
  *     barely advance during a 429-handling tick — backoff is delegated
- *     to WorkManager. A regression here brings back the "force=true
- *     persists across retries" failure mode.
- *  3. **The `RateLimitStore` is passive UI.** The worker must not read
- *     the store to gate its own work; doing so would reintroduce the
- *     active-skip whose force-bypass caused the incident.
+ *     to WorkManager.
+ *  3. **The active-skip is unconditional.** If [RateLimitStore] reports
+ *     a non-zero remaining wait, the worker exits without an API call.
+ *     No input-data flag may bypass this — `force=true` was the original
+ *     incident's root cause and stays retired.
  *  4. **`PoolSyncWorkNames.ALL` has exactly one lane.** Two lanes
  *     running in parallel against the same already-rate-limited artist
  *     is the second half of the 2026-05-22 failure.
@@ -59,6 +60,15 @@ class SyncRateLimitGuardrailsTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+
+    @Before fun stubDefaults() {
+        // Default per-test: no recorded wait. Tests that exercise the
+        // active-skip override this with a non-null state. Stubbing
+        // explicitly (rather than relying on the relaxed mock's `.value`
+        // defaulting to null) keeps the contract obvious and isolates
+        // tests against MockK's relaxed-default behavior changing.
+        every { rateLimitStore.state() } returns MutableStateFlow<RateLimitState?>(null)
+    }
 
     // ---- 1. At most one fetch per doWork --------------------------------
 
@@ -130,29 +140,67 @@ class SyncRateLimitGuardrailsTest {
             assertThat(elapsed).isLessThan(1_000L)
         }
 
-    // ---- 3. RateLimitStore is passive UI (no active-skip) ---------------
+    // ---- 3. RateLimitStore active-skip is unconditional -----------------
 
-    @Test fun `worker proceeds normally even when RateLimitStore has a long active wait`() =
+    @Test fun `worker skips the tick entirely when RateLimitStore has a long active wait`() =
         runTest(mainRule.testScheduler) {
-            // The pre-ADR-0003 worker exited early with Result.success when
-            // the store reported a non-zero remaining wait. ADR-0003 retired
-            // that gate (it was the exact path force=true bypassed in the
-            // incident). The store still surfaces a UI countdown — the
-            // worker just doesn't consult it for control flow.
+            // Spotify's own advice ("respect Retry-After") and our incident
+            // history both say: do not issue a request during the announced
+            // wait. The trickle's active-skip is unconditional — there is
+            // no `force` flag, no input-data override, no caller-driven
+            // bypass. This was the WRONG invariant in the first revision
+            // of this test (it asserted "proceeds"); the corrected version
+            // asserts the skip.
             every { rateLimitStore.state() } returns MutableStateFlow(
                 RateLimitState(
                     retryAfterSeconds = 3_600,
                     recordedAtEpochMs = System.currentTimeMillis(),
                 )
             )
-            arrangeSingleArtist()
-            coEvery { artistRepo.fetchAllTrackUrisForArtist("a1") } returns
-                Outcome.Success(emptyList())
 
             val result = build().doWork()
 
             assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
-            coVerify(exactly = 1) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+            // No fetch, no DAO call — total no-op during the announced wait.
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+        }
+
+    @Test fun `no inputData flag can bypass the active-skip (force-flag stays retired)`() =
+        runTest(mainRule.testScheduler) {
+            // Regression guard for the 2026-05-22/23 incident's root cause:
+            // a `force=true` input-data flag that WorkManager preserved
+            // across backoff retries and let hammer through the announced
+            // wait. This test spams several truthy-named flags into
+            // inputData; the worker must ignore all of them and respect
+            // the active-skip unconditionally.
+            every { rateLimitStore.state() } returns MutableStateFlow(
+                RateLimitState(
+                    retryAfterSeconds = 3_600,
+                    recordedAtEpochMs = System.currentTimeMillis(),
+                )
+            )
+            val noisyParams = mockk<WorkerParameters>(relaxed = true)
+            every { noisyParams.inputData } returns androidx.work.Data.Builder()
+                .putBoolean("force", true)
+                .putBoolean("force_sync", true)
+                .putBoolean("skip_rate_limit", true)
+                .putBoolean("override", true)
+                .putBoolean("bypass", true)
+                .build()
+            val worker = PoolSyncWorker(
+                appContext = mockk(relaxed = true),
+                params = noisyParams,
+                artistRepo = artistRepo,
+                poolRepo = poolRepo,
+                whitelistDao = dao,
+                log = mockk<LogSink>(relaxed = true),
+                rateLimitStore = rateLimitStore,
+            )
+
+            val result = worker.doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
         }
 
     @Test fun `429 records the announced wait so the UI countdown stays honest`() =

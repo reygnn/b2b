@@ -37,11 +37,18 @@ import kotlin.time.Duration.Companion.hours
  * a no-op `Result.success()` — no API call, no log clutter beyond a single
  * "idle" line.
  *
- * Rate-limit handling shrinks to nothing structural: a 429 is recorded in
- * the [RateLimitStore] so the UI shows a countdown, then we hand off to
- * WorkManager's exponential backoff via `Result.retry()`. There is no
- * in-run delay, no cap, no per-artist budget, no force flag — none of
- * those are reachable with one fetch per tick.
+ * Two layers of rate-limit handling, both lightweight:
+ *  - **Active-skip:** at `doWork` entry, if Spotify has announced a wait
+ *    and the [RateLimitStore] countdown is still running, exit
+ *    `Result.success()` without hitting the API. Spotify's documented
+ *    guidance is to respect `Retry-After`; sending requests during the
+ *    announced wait is the documented path to penalty extension. Safe
+ *    here because the trickle has no `force` flag — every doWork
+ *    invocation honors the gate, no exception, no parameter to override.
+ *  - **On a fresh 429**: record the announced wait to the store (so the
+ *    UI countdown stays accurate AND the next tick's active-skip fires)
+ *    and return `Result.retry()` to delegate spacing to WorkManager's
+ *    exponential backoff. No in-run delay.
  */
 @HiltWorker
 class PoolSyncWorker @AssistedInject constructor(
@@ -55,6 +62,19 @@ class PoolSyncWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // Active-skip: respect Spotify's announced wait. The previous
+        // design exposed a `force=true` bypass to this gate, which
+        // WorkManager preserved across backoff retries and the
+        // 2026-05-22/23 incident exploited. The trickle has no such
+        // override, so this check cannot be bypassed by any code path
+        // currently reachable from the UI or the worker config.
+        rateLimitStore.state().value?.let { state ->
+            val remaining = state.remainingSecondsAt(System.currentTimeMillis())
+            if (remaining > 0) {
+                log.log("sync: rate-limited for ${remaining}s, skipping tick")
+                return Result.success()
+            }
+        }
         val floor = System.currentTimeMillis() - FRESHNESS_FLOOR_MS
         val nextId = whitelistDao.pickNextToSync(floor)
         if (nextId == null) {

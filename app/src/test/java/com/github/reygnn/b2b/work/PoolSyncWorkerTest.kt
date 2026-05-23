@@ -3,6 +3,7 @@ package com.github.reygnn.b2b.work
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.domain.model.Outcome
@@ -13,9 +14,12 @@ import com.github.reygnn.b2b.support.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 
@@ -37,6 +41,15 @@ class PoolSyncWorkerTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
+
+    @Before fun stubRateLimitState() {
+        // Default: no recorded wait → active-skip is a no-op and the
+        // existing tests reach the normal trickle path. Tests that
+        // exercise the active-skip explicitly set [rateLimitFlow.value]
+        // to a non-null [RateLimitState].
+        every { rateLimitStore.state() } returns rateLimitFlow
+    }
 
     @Test fun `idle when DAO reports nothing eligible`() = runTest(mainRule.testScheduler) {
         // Steady-state case: everything in the whitelist is younger than
@@ -151,6 +164,49 @@ class PoolSyncWorkerTest {
         assertThat(result).isInstanceOf(ListenableWorker.Result.Failure::class.java)
         coVerify(exactly = 0) { poolRepo.replaceTracksForArtist(any(), any()) }
     }
+
+    // ---- Active-skip --------------------------------------------------
+
+    @Test fun `respects an announced rate-limit and skips the tick entirely`() =
+        runTest(mainRule.testScheduler) {
+            // Spotify said "wait 1 hour" and we're well inside that window.
+            // The tick must not even consult the DAO — sending requests
+            // during an announced wait is the documented path to penalty
+            // extension. Result.success (not retry) is intentional:
+            // retry would let WorkManager backoff re-fire before the wait
+            // closes; success lets the next 15 min periodic occurrence
+            // pick it up cleanly once the countdown reaches zero.
+            rateLimitFlow.value = RateLimitState(
+                retryAfterSeconds = 3_600,
+                recordedAtEpochMs = System.currentTimeMillis(),
+            )
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 0) { dao.pickNextToSync(any()) }
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+            // Don't clear the store on a skip — the user still needs the countdown.
+            coVerify(exactly = 0) { rateLimitStore.clear() }
+        }
+
+    @Test fun `proceeds normally when a previously recorded rate-limit has elapsed`() =
+        runTest(mainRule.testScheduler) {
+            // A stale 1 s wait recorded a minute ago: remainingSecondsAt
+            // returns 0, the active-skip is a no-op, and the trickle
+            // proceeds. (The next success path will clear the stale
+            // record; covered by the success-clears-store test above.)
+            rateLimitFlow.value = RateLimitState(
+                retryAfterSeconds = 1,
+                recordedAtEpochMs = System.currentTimeMillis() - 60_000L,
+            )
+            coEvery { dao.pickNextToSync(any()) } returns null
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 1) { dao.pickNextToSync(any()) }
+        }
 
     private fun build(): PoolSyncWorker {
         val params = mockk<WorkerParameters>(relaxed = true)

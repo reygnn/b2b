@@ -155,12 +155,28 @@ do not throw across layer boundaries.
    429-delay, no per-artist budget, no cap, no force-flag, no manual
    sync lane. Spotify's documented 30 s rolling rate-limit window
    cannot host two artist-fetches by construction (tick cadence is
-   15 min, the WorkManager periodic floor). On 429: record to
-   `RateLimitStore` so the UI shows a countdown, then `Result.retry()`
-   and let WorkManager backoff handle the spacing. On Network: same.
-   On Unauthenticated / other terminal errors: `Result.failure()` and
-   wait for the next periodic occurrence. See ADR-0003 for the
-   2026-05-22/23 incident that motivated this redesign.
+   15 min, the WorkManager periodic floor).
+
+   Two layers of rate-limit safety, both lightweight:
+   - **Active-skip at `doWork` entry.** If `RateLimitStore` reports a
+     non-zero remaining wait, exit `Result.success()` immediately, no
+     API call. Spotify's own docs say "respect `Retry-After`"; sending
+     requests during the announced wait is the documented path to
+     penalty extension. The check is unconditional — there is no
+     `force` flag, no input-data override, no caller path that
+     bypasses it. The 2026-05-22/23 incident happened because the
+     pre-trickle worker exposed a `force=true` bypass to this gate
+     which WorkManager preserved across backoff retries; with that
+     entire override surface removed, active-skip is safe to apply
+     unconditionally.
+   - **On a fresh 429:** record to `RateLimitStore` (which arms the
+     next tick's active-skip and the UI countdown), then
+     `Result.retry()` and let WorkManager backoff handle the spacing.
+     No in-run delay.
+
+   On Network: `Result.retry()`. On Unauthenticated / other terminal
+   errors: `Result.failure()` and wait for the next periodic
+   occurrence. See ADR-0003 for the full design and incident background.
 
 5. **Dispatchers via Hilt qualifiers.** Production code injects
    `CoroutineDispatcher` parameters annotated with `@IoDispatcher`,

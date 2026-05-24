@@ -22,6 +22,11 @@ import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -81,6 +86,7 @@ fun HomeScreen(
     val rateLimit by vm.rateLimit.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
     val traceEnabled by vm.traceEnabled.collectAsState()
+    val logClearPending by vm.logClearPending.collectAsState()
 
     LaunchedEffect(Unit) {
         vm.serviceCommand.collect { cmd ->
@@ -90,6 +96,29 @@ fun HomeScreen(
                 ServiceCommand.Stop -> context.stopService(intent)
             }
         }
+    }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val logClearedMessage = stringResource(R.string.logs_cleared_snackbar)
+    val undoLabel = stringResource(R.string.logs_undo)
+
+    // Mirror of the ArtistsScreen delete-undo pattern: while
+    // [logClearPending] is true, an indefinite-duration snackbar is
+    // shown; the VM's own 5 s timer commits the clear by flipping the
+    // flag back to false, at which point the snackbar dismisses. Undo
+    // also flips the flag (and restores the entries via the VM).
+    LaunchedEffect(logClearPending) {
+        if (!logClearPending) {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            return@LaunchedEffect
+        }
+        val result = snackbarHostState.showSnackbar(
+            message = logClearedMessage,
+            actionLabel = undoLabel,
+            withDismissAction = false,
+            duration = SnackbarDuration.Indefinite,
+        )
+        if (result == SnackbarResult.ActionPerformed) vm.undoClearLog()
     }
 
     Scaffold(
@@ -102,7 +131,8 @@ fun HomeScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) { Snackbar(it) } },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
             StatusCard(

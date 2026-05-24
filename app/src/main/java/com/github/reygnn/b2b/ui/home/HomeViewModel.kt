@@ -18,8 +18,10 @@ import com.github.reygnn.b2b.playback.PlayerStateSnapshot
 import com.github.reygnn.b2b.playback.PreviewTrackHolder
 import com.github.reygnn.b2b.service.ServiceState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -110,6 +112,12 @@ class HomeViewModel @Inject constructor(
 
     val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
     val traceEnabled: StateFlow<Boolean> = logBuffer.traceEnabled
+    /**
+     * Mirrors [LogBuffer.hasUndoableClear]. The Home screen renders an
+     * indefinite-duration snackbar while this is `true`; tapping Undo
+     * calls [undoClearLog] and a 5 s timer auto-commits otherwise.
+     */
+    val logClearPending: StateFlow<Boolean> = logBuffer.hasUndoableClear
 
     fun setTraceEnabled(on: Boolean) = logBuffer.setTraceEnabled(on)
 
@@ -128,7 +136,38 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch { orchestrator.skipPreview() }
     }
 
-    fun clearLog() = logBuffer.clear()
+    private var commitClearJob: Job? = null
+
+    /**
+     * Wipe the log with a 5 s undo window. Called from the trash-icon
+     * tap in the log panel. The previous attempt's clear was a one-tap
+     * destructive action that lost diagnostics ahead of a rate-limit
+     * incident; the undo restores the cleared entries verbatim, and the
+     * 5 s timer auto-commits otherwise.
+     *
+     * Calling this again before the previous undo window elapses
+     * commits the older snapshot (it's gone after the second tap) and
+     * starts a fresh window over whatever the buffer holds now —
+     * matches the "you get one undo at a time" mental model.
+     */
+    fun clearLog() {
+        commitClearJob?.cancel()
+        logBuffer.clear()
+        commitClearJob = viewModelScope.launch {
+            delay(LOG_UNDO_MS)
+            logBuffer.commitClear()
+        }
+    }
+
+    /** Restore the most recent clear's entries. No-op once the timer fires. */
+    fun undoClearLog() {
+        commitClearJob?.cancel()
+        logBuffer.undoClear()
+    }
+
+    private companion object {
+        const val LOG_UNDO_MS = 5_000L
+    }
 }
 
 enum class ServiceCommand { Start, Stop }

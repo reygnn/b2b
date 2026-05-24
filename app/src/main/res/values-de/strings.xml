@@ -81,4 +81,6 @@
     <string name="logs_copied_toast">Log kopiert</string>
     <string name="logs_trace_cd_active">Debug-Trace-Logging an</string>
     <string name="logs_trace_cd_inactive">Debug-Trace-Logging aus</string>
+    <string name="logs_cleared_snackbar">Log gelöscht</string>
+    <string name="logs_undo">Rückgängig</string>
 </resources>

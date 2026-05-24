@@ -237,6 +237,111 @@ class ArtistsViewModelTest {
             coVerify(exactly = 1) { artistRepo.searchArtists("annie") }
         }
 
+    @Test fun `same query within cache TTL is served from cache without an HTTP call`() =
+        runTest(mainRule.testScheduler) {
+            // Two submits of the same string a few seconds apart. The
+            // cache holds for 5 min; only the first call reaches the
+            // repo. Pins the M2 mitigation from NEW-ARTISTS.md.
+            coEvery { artistRepo.searchArtists("hannah") } returns
+                Outcome.Success(listOf(artist("a1", "Hannah Laing")))
+            var virtualNowMs = 100_000L
+            val sut = newSut().apply { clock = { virtualNowMs } }
+            runCurrent()
+
+            sut.submitSearch("hannah")
+            runCurrent()
+            virtualNowMs += 10_000L  // 10 s later
+            sut.submitSearch("hannah")
+            runCurrent()
+
+            coVerify(exactly = 1) { artistRepo.searchArtists("hannah") }
+            // Result is still surfaced to the UI on the cached hit.
+            val rows = sut.displayedArtists.value.filterIsInstance<ArtistRow.SearchResult>()
+            assertThat(rows).hasSize(1)
+            assertThat(rows.first().artist.id).isEqualTo("a1")
+        }
+
+    @Test fun `same query past cache TTL re-fetches`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { artistRepo.searchArtists("hannah") } returns
+                Outcome.Success(listOf(artist("a1", "Hannah Laing")))
+            var virtualNowMs = 100_000L
+            val sut = newSut().apply { clock = { virtualNowMs } }
+            runCurrent()
+
+            sut.submitSearch("hannah")
+            runCurrent()
+            // Jump well past the 5 min TTL; entry should be evicted and
+            // the next submit refetches.
+            virtualNowMs += 10L * 60 * 1000
+            sut.submitSearch("hannah")
+            runCurrent()
+
+            coVerify(exactly = 2) { artistRepo.searchArtists("hannah") }
+        }
+
+    @Test fun `cache is case- and whitespace-insensitive`() =
+        runTest(mainRule.testScheduler) {
+            // "Hannah", " hannah ", and "HANNAH" all hit the same cache
+            // entry. The repo call goes out with the user's original
+            // (non-normalized) string so the API receives what the user
+            // typed.
+            coEvery { artistRepo.searchArtists(any()) } returns
+                Outcome.Success(listOf(artist("a1", "Hannah Laing")))
+            var virtualNowMs = 100_000L
+            val sut = newSut().apply { clock = { virtualNowMs } }
+            runCurrent()
+
+            sut.submitSearch("Hannah")
+            runCurrent()
+            virtualNowMs += 1_000L
+            sut.submitSearch(" hannah ")
+            runCurrent()
+            virtualNowMs += 1_000L
+            sut.submitSearch("HANNAH")
+            runCurrent()
+
+            coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
+        }
+
+    @Test fun `double-tap of the same button within 500ms is swallowed`() =
+        runTest(mainRule.testScheduler) {
+            // Two submits of DIFFERENT strings under 500 ms apart. The
+            // cache doesn't help here (different keys), so the
+            // min-interval guard is what stops the second call.
+            coEvery { artistRepo.searchArtists(any()) } returns
+                Outcome.Success(emptyList())
+            var virtualNowMs = 100_000L
+            val sut = newSut().apply { clock = { virtualNowMs } }
+            runCurrent()
+
+            sut.submitSearch("ab")
+            runCurrent()
+            virtualNowMs += 100L  // way under MIN_SEARCH_INTERVAL_MS
+            sut.submitSearch("abc")
+            runCurrent()
+
+            coVerify(exactly = 1) { artistRepo.searchArtists(any()) }
+        }
+
+    @Test fun `different queries past the min-interval each hit the repo`() =
+        runTest(mainRule.testScheduler) {
+            coEvery { artistRepo.searchArtists(any()) } returns
+                Outcome.Success(emptyList())
+            var virtualNowMs = 100_000L
+            val sut = newSut().apply { clock = { virtualNowMs } }
+            runCurrent()
+
+            sut.submitSearch("a")
+            runCurrent()
+            virtualNowMs += 1_000L  // > MIN_SEARCH_INTERVAL_MS
+            sut.submitSearch("b")
+            runCurrent()
+
+            coVerify(exactly = 1) { artistRepo.searchArtists("a") }
+            coVerify(exactly = 1) { artistRepo.searchArtists("b") }
+        }
+
     @Test fun `submitSearch with blank clears state without hitting Spotify`() =
         runTest(mainRule.testScheduler) {
             // Pins the symmetric clear path on the explicit-submit side too:

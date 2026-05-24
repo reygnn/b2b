@@ -58,4 +58,93 @@ class LogBufferTest {
             cancelAndConsumeRemainingEvents()
         }
     }
+
+    // ---- clear + undo --------------------------------------------------
+
+    @Test fun `clear arms an undoable snapshot`() = runTest(mainRule.testScheduler) {
+        val sut = LogBuffer()
+        sut.log("a")
+        sut.log("b")
+
+        assertThat(sut.hasUndoableClear.value).isFalse()
+        sut.clear()
+        assertThat(sut.hasUndoableClear.value).isTrue()
+    }
+
+    @Test fun `undoClear restores the cleared entries verbatim`() =
+        runTest(mainRule.testScheduler) {
+            val sut = LogBuffer()
+            sut.log("a")
+            sut.log("b")
+            sut.clear()
+            assertThat(sut.entries.value).isEmpty()
+
+            sut.undoClear()
+
+            assertThat(sut.entries.value.map { it.message })
+                .containsExactly("a", "b")
+                .inOrder()
+            assertThat(sut.hasUndoableClear.value).isFalse()
+        }
+
+    @Test fun `undoClear merges restored entries with any logs arriving in between`() =
+        runTest(mainRule.testScheduler) {
+            // Realistic timing: user clears, the worker fires a tick and
+            // appends "sync: …", user taps Undo. The Undo must restore the
+            // pre-clear entries without dropping the post-clear "sync:" line.
+            val sut = LogBuffer()
+            sut.log("a")
+            sut.log("b")
+            sut.clear()
+            sut.log("sync: post-clear")
+
+            sut.undoClear()
+
+            assertThat(sut.entries.value.map { it.message })
+                .containsExactly("a", "b", "sync: post-clear")
+                .inOrder()
+        }
+
+    @Test fun `commitClear finalises the snapshot and disables undo`() =
+        runTest(mainRule.testScheduler) {
+            val sut = LogBuffer()
+            sut.log("a")
+            sut.clear()
+            sut.commitClear()
+
+            sut.undoClear()
+
+            // Undo after commit is a no-op; buffer stays empty.
+            assertThat(sut.entries.value).isEmpty()
+            assertThat(sut.hasUndoableClear.value).isFalse()
+        }
+
+    @Test fun `second clear commits the previous snapshot, only the latest is undoable`() =
+        runTest(mainRule.testScheduler) {
+            // First batch [a, b] is cleared; user lingers, worker logs "c";
+            // user clears again before tapping Undo. Per the
+            // "one-undo-at-a-time" contract, the first snapshot is now
+            // gone; only "c" comes back on Undo.
+            val sut = LogBuffer()
+            sut.log("a")
+            sut.log("b")
+            sut.clear()
+            sut.log("c")
+            sut.clear()
+
+            sut.undoClear()
+
+            assertThat(sut.entries.value.map { it.message }).containsExactly("c")
+        }
+
+    @Test fun `clear with no entries does not arm undo`() = runTest(mainRule.testScheduler) {
+        // An empty buffer being cleared is a UX no-op; the snackbar should
+        // not show ("there was nothing to undo"). [hasUndoableClear]
+        // stays false so the Home screen does not flash a stale snackbar.
+        val sut = LogBuffer()
+
+        sut.clear()
+
+        assertThat(sut.hasUndoableClear.value).isFalse()
+    }
 }

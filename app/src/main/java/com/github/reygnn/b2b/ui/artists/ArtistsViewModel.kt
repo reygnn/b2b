@@ -85,6 +85,24 @@ class ArtistsViewModel @Inject constructor(
     private val poolRepo: PoolRepository,
 ) : ViewModel() {
 
+    /**
+     * Wall-clock source for the search cache TTL and min-interval guard.
+     * Production reads `System.currentTimeMillis()`; tests overwrite this
+     * with a controlled lambda to make the time-sensitive assertions
+     * deterministic without dragging Robolectric or a real clock advance
+     * into the JVM unit test path.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    private data class CachedSearchResult(
+        val results: List<Artist>,
+        val timestamp: Long,
+    )
+
+    private val searchCache = mutableMapOf<String, CachedSearchResult>()
+    private var lastSearchAtMs: Long = 0L
+
     // Eagerly collected so the combined `displayedArtists` always has a
     // current value as soon as the VM is created — important for the
     // checkbox screen, where the user expects the existing whitelist to
@@ -162,21 +180,61 @@ class ArtistsViewModel @Inject constructor(
         }
     }
 
-    /** Explicit search: 🔍 button or IME Search action. */
+    /**
+     * Explicit search: 🔍 button or IME Search action. Two HTTP-saving
+     * guards sit in front of [ArtistRepository.searchArtists]:
+     *
+     *  - **Per-query cache** with a 5 min TTL keyed on the trimmed,
+     *    lowercased query. Re-submitting the same string returns the
+     *    cached hits without an API call — covers the common iteration
+     *    pattern of typing a query, hitting search, refining, hitting
+     *    search again with the same final text.
+     *  - **Min-interval guard** of 500 ms between any two HTTP-emitting
+     *    submits. Swallows accidental double-taps of the 🔍 button
+     *    that would otherwise emit two identical API calls.
+     *
+     * NEW-ARTISTS.md H1 motivates both: unguarded search is the most
+     * plausible unprotected vector for a Spotify rate-limit hit during
+     * artist-add sessions.
+     */
     fun submitSearch(query: String) {
         searchJob?.cancel()
-        if (query.isBlank()) {
+        val normalized = query.trim()
+        if (normalized.isBlank()) {
             _searchResults.value = emptyList()
             _isSearching.value = false
             _searchError.value = null
             return
         }
+        val cacheKey = normalized.lowercase()
+        val now = clock()
+
+        // Cache hit: serve immediately, no HTTP.
+        searchCache[cacheKey]?.let { cached ->
+            if (now - cached.timestamp < SEARCH_CACHE_TTL_MS) {
+                _searchResults.value = cached.results
+                _isSearching.value = false
+                _searchError.value = null
+                return
+            }
+            // Stale: evict and fall through to a fresh fetch.
+            searchCache.remove(cacheKey)
+        }
+
+        // Double-tap guard. Swallow this submit if the previous one
+        // fired less than [MIN_SEARCH_INTERVAL_MS] ago. The cache check
+        // above already handled the "same query twice" case; this
+        // catches "rapidly different queries" rate-limit pressure.
+        if (now - lastSearchAtMs < MIN_SEARCH_INTERVAL_MS) return
+        lastSearchAtMs = now
+
         searchJob = viewModelScope.launch {
             _isSearching.value = true
             _searchError.value = null
             when (val r = artistRepo.searchArtists(query)) {
                 is Outcome.Success -> {
                     _searchResults.value = r.value
+                    searchCache[cacheKey] = CachedSearchResult(r.value, now)
                 }
                 is Outcome.Error -> {
                     _searchResults.value = emptyList()
@@ -255,5 +313,17 @@ class ArtistsViewModel @Inject constructor(
 
     private companion object {
         const val UNDO_SNACKBAR_MS = 5_000L
+
+        // Per-query cache TTL. Spotify search results don't churn fast
+        // and the user typically refines a query within seconds; 5 min
+        // is well above the realistic re-search window without serving
+        // genuinely stale catalog data.
+        const val SEARCH_CACHE_TTL_MS = 5L * 60 * 1000
+
+        // Minimum wall-clock interval between HTTP-emitting submits.
+        // Sized to swallow accidental double-taps of the 🔍 button
+        // without getting in the way of a deliberate "search again"
+        // after a typo correction.
+        const val MIN_SEARCH_INTERVAL_MS = 500L
     }
 }

@@ -28,6 +28,21 @@ class LogBuffer @Inject constructor() : LogSink {
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
+    // Snapshot of the last [clear]'s buffer contents, retained so the
+    // 5 s undo snackbar in the Home screen can roll a stray tap back.
+    // Null when no undo is pending. Mutated only under [lock] like the
+    // ring buffer itself.
+    private var clearedSnapshot: List<LogEntry>? = null
+
+    private val _hasUndoableClear = MutableStateFlow(false)
+    /**
+     * Reactive "is there a clear that can still be undone?" signal.
+     * Flips to `true` inside [clear] and back to `false` on either
+     * [undoClear] or [commitClear]; the Home screen uses it to drive a
+     * snackbar with an Undo action.
+     */
+    val hasUndoableClear: StateFlow<Boolean> = _hasUndoableClear.asStateFlow()
+
     // In-memory only — not persisted across process restarts. The toggle
     // is opt-in by design: leaving it on after a debug session is a
     // mistake we don't have to recover from.
@@ -61,10 +76,51 @@ class LogBuffer @Inject constructor() : LogSink {
         if (_traceEnabled.value) log(message)
     }
 
+    /**
+     * Wipe the visible buffer and stash its contents for a possible
+     * [undoClear]. A second [clear] within the undo window commits any
+     * previous snapshot before starting a new one — the user gets one
+     * undo at a time, always the most recent clear.
+     */
     fun clear() {
         synchronized(lock) {
+            clearedSnapshot = buffer.toList()
             buffer.clear()
             _entries.value = emptyList()
+            _hasUndoableClear.value = clearedSnapshot!!.isNotEmpty()
+        }
+    }
+
+    /**
+     * Restore the most recent [clear]'s stashed entries to the head of
+     * the buffer, preserving any log lines that arrived between the
+     * clear and the undo (those keep their later positions). No-op when
+     * no undo is pending or when [commitClear] has already finalized it.
+     */
+    fun undoClear() {
+        synchronized(lock) {
+            val snap = clearedSnapshot ?: return
+            clearedSnapshot = null
+            // ArrayDeque.addFirst inserts at head, so iterate the snapshot
+            // in reverse to preserve its original ordering once everything
+            // has been prepended. If the combined size exceeds the cap,
+            // the same FIFO eviction the live buffer uses kicks in.
+            for (entry in snap.asReversed()) buffer.addFirst(entry)
+            while (buffer.size > MAX_ENTRIES) buffer.removeFirst()
+            _entries.value = buffer.toList()
+            _hasUndoableClear.value = false
+        }
+    }
+
+    /**
+     * Finalize the most recent [clear], dropping the undo opportunity.
+     * Called by [com.github.reygnn.b2b.ui.home.HomeViewModel] after the
+     * 5 s snackbar window elapses; safe to call when nothing is pending.
+     */
+    fun commitClear() {
+        synchronized(lock) {
+            clearedSnapshot = null
+            _hasUndoableClear.value = false
         }
     }
 

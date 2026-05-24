@@ -8,23 +8,27 @@ own recommendation algorithm.
 
 ## Status
 
-**Real-device-validated, version 0.5.8 (versionCode 38).** End-to-end push
-confirmed: Spotify plays a whitelisted track → 15 s before the track ends,
-b2b enqueues the next pool track into Spotify's queue → clean handover.
-PKCE OAuth against `accounts.spotify.com`, periodic + manual
-`PoolSyncWorker` with multi-layered rate-limit protection (skip while a
-Spotify penalty is still running, per-artist freshness skip, 30 s
-inter-artist cooldown, per-artist timeout), Compose UI (Login → Whitelist
-→ Artists → Settings) with status card, track-position countdown, skip
-button for the preview pick, explicit artist search, and a 500-line log
-panel. App Remote SDK integration via `AppRemotePlayerStateSource`
-(Main-Looper-pinned). Material You dynamic color follows system dark mode.
-Suite: 151 unit tests (JUnit + MockK + Turbine + MockWebServer +
+**Real-device-validated, version 0.7.0 (versionCode 42).** End-to-end
+push confirmed: Spotify plays a whitelisted track → 15 s before the
+track ends, b2b enqueues the next pool track into Spotify's queue →
+clean handover. PKCE OAuth against `accounts.spotify.com`. The
+`PoolSyncWorker` now runs as a **defensive trickle** — one artist per
+15 minute tick, with an unconditional active-skip when Spotify has
+announced a rate-limit wait. See "How the defensive sync works"
+below; details and incident background in `docs/adr/0003-trickle-pool-sync.md`.
+Compose UI (Login → Whitelist → Artists → Settings) with status card
+including a live "Next sync: HH:mm" hint, per-artist track count in
+the Manage Artists screen, track-position countdown, skip button for
+the preview pick, explicit artist search, and a 500-line log panel.
+App Remote SDK integration via `AppRemotePlayerStateSource` (Main-
+Looper-pinned). Material You dynamic color follows system dark mode.
+Suite: 161 unit tests (JUnit + MockK + Turbine + MockWebServer +
 Robolectric). Build clean, no warnings.
 
 For architecture details, see the "Architecture" section below. For
-personal-app conventions, see `CLAUDE.md`. For code-review fixes since
-`b2b-main`, see `FIXES.md`.
+personal-app conventions, see `CLAUDE.md`. For the trickle design and
+the 2026-05-22/23 incident that motivated it, see
+`docs/adr/0003-trickle-pool-sync.md`.
 
 ## Setup
 
@@ -86,14 +90,17 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    explicit (🔍 button or IME Search action — typing does not issue a
    Spotify query; an empty field clears the last results locally).
    Search results have "+" buttons for adding. Whitelist entries at the
-   top of the list have an active checkbox (whether the random picker
-   currently uses them — toggling is local, no sync) and a 🗑 icon for
-   permanent removal with a 5 s undo snackbar. There is no "Sync now"
-   button — the trickle worker picks up newly-added artists on its own
-   15 min cadence (ADR-0003). Inactive artists keep their pool tracks
-   for fast reactivation; the trickle skips them (no API usage), and
-   the picker filters them out via a JOIN on
-   `whitelisted_artist.isActive = 1`.
+   top of the list show as `<Name> (<N>)` where `N` is the current
+   number of pool tracks for that artist — a fresh `(0)` means the
+   trickle worker has not refreshed the artist's slice yet (combine
+   with the Home card's "Next sync" hint to see when). Each row has an
+   active checkbox (whether the random picker currently uses this
+   artist — toggling is local, no sync) and a 🗑 icon for permanent
+   removal with a 5 s undo snackbar. There is no "Sync now" button —
+   the trickle worker picks up newly-added artists on its own 15 min
+   cadence. Inactive artists keep their pool tracks for fast
+   reactivation; the trickle skips them (no API usage), and the picker
+   filters them out via a JOIN on `whitelisted_artist.isActive = 1`.
 5. "Start session" → `PlaybackOrchestratorService` starts as a foreground
    service, connects via App Remote to the local Spotify instance, and
    observes `PlayerState`. Position-based timer:
@@ -109,16 +116,25 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    - `Track: 1:23 / 3:45 · Next push in 0:42` — position extrapolated
      from the most recent SDK event (1 Hz tick), countdown to the
      trigger.
-   - `Pool: N tracks · last sync 3h ago` or `Syncing now…` while a
-     `PoolSyncWorker` is running. `N` counts only tracks belonging to
-     active artists (same JOIN semantics as the picker — paused artists
-     do not contribute to the display, even though their tracks remain
-     in the DB).
+   - `Pool: N tracks · last sync 3min ago` or `Syncing now…` while a
+     `PoolSyncWorker` tick is running. `N` counts only tracks belonging
+     to active artists (same JOIN semantics as the picker — paused
+     artists do not contribute to the display, even though their tracks
+     remain in the DB).
+   - `Next sync: HH:mm` — wall-clock time of the next scheduled trickle
+     tick, rendered only when that time is within the next hour AND no
+     sync is currently running. With the 15 min cadence this line is
+     essentially always visible in steady state; if Doze or the
+     UNMETERED-network constraint has pushed the schedule beyond an
+     hour, the line hides rather than displaying a far-future
+     placeholder.
    - `Artists: X active of Y total` — the whitelist at a glance.
    - `Rate-Limit: HH:MM:SS` — visible only when Spotify has announced a
      wait to the `PoolSyncWorker` and the countdown is still running.
      Ticks every second, disappears at 0, and survives app restart
-     (SharedPreferences-persisted `RateLimitStore`).
+     (SharedPreferences-persisted `RateLimitStore`). During this
+     countdown the trickle skips every tick (no API call) — see "How
+     the defensive sync works" below.
 7. **Log panel** below the status card: a 500-line ring buffer
    (`LogBuffer`) with `HH:mm:ss  message` per entry, `reverseLayout`
    (newest on top). Sufficient for a "what just happened?" diagnosis
@@ -128,6 +144,124 @@ personal-app conventions, see `CLAUDE.md`. For code-review fixes since
    routes back to Login. Since ADR-0003 there is no manual sync,
    force-override, or cancel-sync affordance on this screen: the
    trickle handles everything on its own 15 min cadence.
+
+## How the defensive sync works
+
+The whole reason b2b exists is to keep your pool of whitelisted tracks
+fresh enough that the orchestrator never runs out of things to enqueue.
+The mechanism that fills that pool — the `PoolSyncWorker` — talks to
+Spotify's Web API, and Spotify rate-limits aggressively. Since
+version 0.6.0, b2b's sync is built around one defensive rule:
+
+> **Never put more than one artist fetch into a single Spotify
+> rate-limit window.**
+
+Spotify's documented rate-limit window is 30 seconds (rolling). b2b's
+trickle cadence is 15 minutes — a 30× safety margin. As a result the
+following statements are true by construction, not by hopeful coding:
+
+- Two artist fetches can never overlap within Spotify's rolling
+  window. There is no inter-request burst to mis-pace.
+- A single user action can never trigger a flurry of API calls. There
+  is no "Sync now" button, no force-override, no manual lane. Every
+  tick is the same shape: one artist, then quiet.
+- If Spotify announces a wait via the `Retry-After` header, the next
+  tick reads the recorded wait, **logs `sync: rate-limited for Xs,
+  skipping tick`, and exits without an API call**. This skip is
+  unconditional — there is no input flag the user can set to bypass it.
+
+### What you'll see on a normal day
+
+After installing or signing in fresh, the trickle starts ticking every
+15 minutes. On each tick:
+
+1. The worker reads the whitelist and asks the database for **the
+   next artist to sync**. The pick order is fixed: never-synced
+   artists first (oldest "added" timestamp wins ties), then artists
+   whose pool slice is older than 24 hours (oldest sync wins ties).
+   If everything is younger than 24 hours, the tick is a no-op and
+   logs `sync: nothing eligible, idle`.
+2. The chosen artist's full discography is fetched via
+   `/artists/{id}/albums` + `/albums/{id}/tracks`. Compilation tracks
+   that don't list the artist are filtered out.
+3. The artist's slice of the pool is replaced atomically (delete +
+   upsert in one SQLite transaction, so a worker kill mid-swap leaves
+   the previous slice intact rather than briefly empty).
+4. Orphan rows from artists no longer in the whitelist are pruned.
+
+Between ticks, the Home status card shows:
+
+- `Pool: N tracks · last sync 3min ago` — `N` is the active-pool
+  count, always reflecting what the random picker can draw from.
+- `Next sync: HH:mm` — the wall-clock time the next tick is scheduled
+  for. With the 15 min cadence this is essentially always within the
+  hour and almost always visible.
+
+On the **Manage Artists** screen, each whitelisted row shows
+`<Name> (<N>)` where `<N>` is the number of pool tracks for that
+artist. A fresh `(0)` next to a newly-added artist is informative —
+it tells you the trickle has not refreshed this slice yet. Combined
+with the `Next sync` hint, you know exactly when the count will
+update.
+
+### What happens when Spotify pushes back
+
+If Spotify returns HTTP 429 with a `Retry-After` header — which is
+rare under the trickle, but can still happen if the account has had a
+prior penalty or if Spotify has a global hiccup — the worker:
+
+1. Records the announced wait (seconds + wall-clock timestamp) into a
+   small SharedPreferences-backed store.
+2. Returns `Result.retry()` to WorkManager (which adds its own 5 min
+   exponential backoff on top).
+3. **No in-run delay.** The worker exits within the second.
+
+The recorded wait drives two pieces of UX:
+
+- The Home status card shows `Rate-Limit: HH:MM:SS`, ticking down
+  every second and surviving app restart.
+- The next periodic tick's first move is to read the recorded wait
+  and exit early if it's still running. This is the unconditional
+  active-skip mentioned above. It logs the remaining seconds for
+  diagnostic purposes and makes zero API calls.
+
+When the recorded wait reaches zero (or a successful tick clears it),
+the trickle returns to normal operation on its 15 min schedule.
+
+### What you can and can't do
+
+- ✅ You **can** add and remove artists at any time. The trickle picks
+  up new entries on the next tick.
+- ✅ You **can** pause an artist (uncheck the active box) at any time.
+  Their existing pool tracks stay around for a fast re-activation;
+  the trickle skips them while paused.
+- ✅ You **can** sign out at any time.
+- ✅ You **can** read the in-app log panel to see what the worker is
+  doing without `adb logcat`.
+- ❌ You **cannot** trigger an immediate sync. This is intentional. A
+  "Sync now" button was the proximate cause of a multi-hour Spotify
+  penalty on 2026-05-22 (see ADR-0003) and was removed in the
+  defensive rewrite. If you've just added six artists and want them
+  in the pool right now, the answer is "wait six ticks" (90 minutes).
+- ❌ You **cannot** override the active-skip during a rate-limit
+  countdown. Spotify's `Retry-After` is treated as authoritative.
+
+### Why "trickle" and not "all at once"
+
+The previous design walked every whitelisted artist in a single run,
+spaced by 30-second cooldowns. It worked for months — until a single
+user-triggered "Sync anyway" tap, combined with WorkManager preserving
+input data across backoff retries and two parallel work-lanes (one
+periodic, one manual), produced six API calls into an announced
+6-hour penalty. Spotify upgraded the penalty to ~24 hours; the app
+was effectively shadow-banned for the day.
+
+The trickle eliminates the failure mode structurally. With one artist
+per 15 minutes there is no burst to mis-pace, no input data to leak
+into a retry, no parallel lane to share a window with. The
+behaviour is duller and slower but cannot leak into the failure mode
+that motivated the rewrite. The full incident report and design
+decision is in `docs/adr/0003-trickle-pool-sync.md`.
 
 ## Architecture
 

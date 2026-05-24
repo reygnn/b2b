@@ -69,6 +69,21 @@ class HomeViewModel @Inject constructor(
     )
 
     /**
+     * Wall-clock epoch of the next periodic sync tick, or `null` when the
+     * worker is not currently ENQUEUED. The Home status card uses this to
+     * render a "Next sync: HH:MM" line; the rendering gate (within the
+     * next hour, and not while [isSyncing]) lives in the Composable layer.
+     *
+     * `WhileSubscribed(5_000)` matches the other reactive flows above —
+     * the same `runCurrent()` test gotcha applies.
+     */
+    val nextSyncEpochMs: StateFlow<Long?> = poolSyncObserver.observeNextSyncEpochMs().stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = null,
+    )
+
+    /**
      * Active / total whitelisted artists, shown on the status card so the
      * user can see at a glance how much of the whitelist is currently
      * participating in the random picker (paused artists are still in the

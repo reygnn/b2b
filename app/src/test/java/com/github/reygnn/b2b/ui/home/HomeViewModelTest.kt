@@ -53,6 +53,7 @@ class HomeViewModelTest {
         every { poolRepo.observeTrackCount() } returns MutableStateFlow(0)
         every { poolRepo.observeLatestSyncEpochMs() } returns MutableStateFlow(null)
         every { poolSyncObserver.observeIsSyncing() } returns MutableStateFlow(false)
+        every { poolSyncObserver.observeNextSyncEpochMs() } returns MutableStateFlow(null)
         every { artistRepo.observeWhitelist() } returns whitelistFlow
         every { rateLimitStore.state() } returns rateLimitFlow
     }
@@ -122,6 +123,25 @@ class HomeViewModelTest {
                 assertThat(awaitItem()).isFalse()
                 syncing.value = true
                 assertThat(awaitItem()).isTrue()
+                cancelAndConsumeRemainingEvents()
+            }
+        }
+
+    @Test fun `nextSyncEpochMs reflects the PoolSyncObserver`() =
+        runTest(mainRule.testScheduler) {
+            // Mirrors the isSyncing test pattern: drive an upstream
+            // MutableStateFlow through the observer mock and assert the
+            // VM forwards each new value. Turbine keeps the
+            // WhileSubscribed flow live for the duration of the assertions.
+            val nextSync = MutableStateFlow<Long?>(null)
+            every { poolSyncObserver.observeNextSyncEpochMs() } returns nextSync
+            val sut = newSut()
+            sut.nextSyncEpochMs.test {
+                assertThat(awaitItem()).isNull()
+                nextSync.value = 1_700_000_000_000L
+                assertThat(awaitItem()).isEqualTo(1_700_000_000_000L)
+                nextSync.value = null
+                assertThat(awaitItem()).isNull()
                 cancelAndConsumeRemainingEvents()
             }
         }

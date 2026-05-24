@@ -76,6 +76,7 @@ fun HomeScreen(
     val poolCount by vm.poolTrackCount.collectAsState()
     val lastSync by vm.lastSyncEpochMs.collectAsState()
     val isSyncing by vm.isSyncing.collectAsState()
+    val nextSync by vm.nextSyncEpochMs.collectAsState()
     val artistCounts by vm.artistCounts.collectAsState()
     val rateLimit by vm.rateLimit.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
@@ -113,6 +114,7 @@ fun HomeScreen(
                 poolCount = poolCount,
                 lastSyncEpochMs = lastSync,
                 isSyncing = isSyncing,
+                nextSyncEpochMs = nextSync,
                 artistCounts = artistCounts,
                 rateLimit = rateLimit,
             )
@@ -282,6 +284,7 @@ private fun StatusCard(
     poolCount: Int,
     lastSyncEpochMs: Long?,
     isSyncing: Boolean,
+    nextSyncEpochMs: Long?,
     artistCounts: ArtistCounts,
     rateLimit: RateLimitState?,
 ) {
@@ -319,6 +322,25 @@ private fun StatusCard(
                     poolLine(poolCount, lastSyncEpochMs, isSyncing, now),
                 style = MaterialTheme.typography.bodyMedium,
             )
+            // Next-sync hint. Only rendered when the next periodic tick is
+            // actually within the next hour AND we're not currently in the
+            // middle of a sync ("Syncing now…" above wins). The hour gate
+            // keeps the line meaningful: with the 15 min trickle cadence
+            // it is essentially always visible, but if Doze or the
+            // UNMETERED constraint pushes the next run far out, hiding
+            // is better than showing "Next sync: 04:13" tomorrow.
+            if (!isSyncing && nextSyncEpochMs != null) {
+                val deltaMs = nextSyncEpochMs - now
+                if (deltaMs in 0L..NEXT_SYNC_HORIZON_MS) {
+                    Text(
+                        text = stringResource(
+                            R.string.next_sync_at,
+                            formatHhMm(nextSyncEpochMs),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
             Text(
                 text = "${stringResource(R.string.artists_label)}: " +
                     stringResource(
@@ -454,3 +476,20 @@ private fun formatMmSs(ms: Long): String {
     val s = totalSec % 60
     return "%d:%02d".format(m, s)
 }
+
+/**
+ * Wall-clock HH:mm in the user's locale-defined 12 h / 24 h format. Used
+ * by the "Next sync: HH:mm" status line; the wall-clock view here matters
+ * because the user is asking *when*, not *in how long*.
+ */
+private fun formatHhMm(epochMs: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))
+
+/**
+ * How far into the future a scheduled next-sync may sit before the
+ * status-card row hides itself. The 15 min trickle cadence keeps the row
+ * almost always visible; the hour ceiling guards against showing a
+ * far-future placeholder when Doze or the UNMETERED constraint has
+ * pushed WorkManager's prediction beyond anything useful to the user.
+ */
+private const val NEXT_SYNC_HORIZON_MS = 60L * 60 * 1000

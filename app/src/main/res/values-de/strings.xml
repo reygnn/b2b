@@ -57,6 +57,7 @@
     <string name="pool_summary">%1$d Tracks · letzter Sync %2$s</string>
     <string name="pool_summary_never">%1$d Tracks · nie synchronisiert</string>
     <string name="pool_syncing">Synchronisiert gerade…</string>
+    <string name="next_sync_at">Nächster Sync: %1$s</string>
 
     <string name="artists_label">Artists</string>
     <string name="artists_summary">%1$d aktiv von %2$d total</string>

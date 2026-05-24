@@ -305,6 +305,9 @@ class PoolRepositoryImpl @Inject constructor(
 
     override fun observeLatestSyncEpochMs(): Flow<Long?> = dao.observeLatestSyncEpochMs()
 
+    override fun observeTrackCountByArtist(): Flow<Map<String, Int>> =
+        dao.observeTrackCountByArtist()
+
     override suspend fun lastSyncedEpochMsForArtist(artistId: String): Long? =
         withContext(io) { dao.lastSyncedEpochMsForArtist(artistId) }
 

@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.data.local.dao
 
 import androidx.room.Dao
 import androidx.room.Insert
+import androidx.room.MapColumn
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
@@ -118,6 +119,19 @@ abstract class PoolTrackDao {
 
     @Query("SELECT MAX(lastSyncedEpochMs) FROM pool_track")
     abstract fun observeLatestSyncEpochMs(): Flow<Long?>
+
+    /**
+     * Per-artist counts as a reactive map. Room can decode a two-column
+     * GROUP BY result into `Map<String, Int>` by treating the first column
+     * as the key and the second as the value. Artists with no pool rows
+     * simply don't appear in the map — the UI treats a missing key as 0.
+     *
+     * Used by `ArtistsViewModel` to render the "name (N)" suffix; emits
+     * whenever any pool_track row changes (which is also exactly when the
+     * trickle worker finishes a slice swap).
+     */
+    @Query("SELECT artistId, COUNT(*) AS cnt FROM pool_track GROUP BY artistId")
+    abstract fun observeTrackCountByArtist(): Flow<Map<@MapColumn(columnName = "artistId") String, @MapColumn(columnName = "cnt") Int>>
 
     /**
      * Most recent sync timestamp for a single artist, or `null` if the

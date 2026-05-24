@@ -175,8 +175,12 @@ private fun WhitelistedRow(
             onCheckedChange = onSetActive,
             modifier = Modifier.semantics { contentDescription = activeCd },
         )
+        // "(N)" follows the name even when N == 0 — a fresh "(0)" signals
+        // "trickle hasn't filled this artist yet" rather than "no count
+        // info." Combined with the Home card's next-sync timer, the user
+        // knows exactly when the count is expected to update.
         Text(
-            text = row.artist.name,
+            text = "${row.artist.name} (${row.trackCount})",
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.weight(1f),
         )

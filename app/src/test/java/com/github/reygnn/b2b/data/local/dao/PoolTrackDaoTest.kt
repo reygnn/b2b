@@ -6,6 +6,7 @@ import com.github.reygnn.b2b.data.local.AppDatabase
 import com.github.reygnn.b2b.data.local.entity.PoolTrackEntity
 import com.github.reygnn.b2b.data.local.entity.WhitelistedArtistEntity
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -210,6 +211,48 @@ class PoolTrackDaoTest {
         dao.upsertAll(listOf(track("u1", "a1")))
 
         assertThat(dao.activeTrackCount()).isEqualTo(0)
+    }
+
+    @Test fun `observeTrackCountByArtist returns one entry per artist with pool rows`(): Unit =
+        runBlocking {
+            // a1 → 2 rows, a2 → 1 row, a3 → 0 (not in pool at all).
+            // a3 must not appear in the map; the UI treats a missing key
+            // as zero, so an explicit zero would be redundant.
+            whitelistDao.upsert(whitelistEntry("a1", isActive = true))
+            whitelistDao.upsert(whitelistEntry("a2", isActive = true))
+            whitelistDao.upsert(whitelistEntry("a3", isActive = true))
+            dao.upsertAll(
+                listOf(
+                    track("u1", "a1"),
+                    track("u2", "a1"),
+                    track("u3", "a2"),
+                )
+            )
+
+            val map = dao.observeTrackCountByArtist().first()
+
+            assertThat(map).containsExactly("a1", 2, "a2", 1)
+        }
+
+    @Test fun `observeTrackCountByArtist returns empty map for empty pool`() = runBlocking {
+        // Pins the "no rows → empty map" contract that ArtistsViewModel
+        // depends on: every artist falls back to 0 in the UI.
+        val map = dao.observeTrackCountByArtist().first()
+
+        assertThat(map).isEmpty()
+    }
+
+    @Test fun `observeTrackCountByArtist counts orphans too`(): Unit = runBlocking {
+        // Pool rows that linger after a whitelist row is gone still show up
+        // in the per-artist map — there's no JOIN here. The UI never asks
+        // about orphans (they don't appear in the whitelist list), so it
+        // doesn't matter; the test pins the SQL behaviour so a future JOIN
+        // change is intentional.
+        dao.upsertAll(listOf(track("u1", "ghost-artist")))
+
+        val map = dao.observeTrackCountByArtist().first()
+
+        assertThat(map).containsExactly("ghost-artist", 1)
     }
 
     private fun track(uri: String, artistId: String) = PoolTrackEntity(

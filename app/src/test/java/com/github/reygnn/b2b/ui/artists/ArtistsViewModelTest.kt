@@ -28,9 +28,11 @@ class ArtistsViewModelTest {
     private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
+    private val trackCountsFlow = MutableStateFlow<Map<String, Int>>(emptyMap())
 
     @Before fun stub() {
         coEvery { artistRepo.observeWhitelist() } returns whitelistFlow
+        coEvery { poolRepo.observeTrackCountByArtist() } returns trackCountsFlow
         coEvery { poolRepo.tracksForArtist(any()) } returns emptyList()
     }
 
@@ -41,8 +43,48 @@ class ArtistsViewModelTest {
             runCurrent()
 
             assertThat(sut.displayedArtists.value).containsExactly(
-                ArtistRow.Whitelisted(artist("a1", "Hannah", isActive = true), isActive = true)
+                ArtistRow.Whitelisted(artist("a1", "Hannah", isActive = true), isActive = true, trackCount = 0)
             )
+        }
+
+    @Test fun `whitelisted row carries the per-artist pool count`() =
+        runTest(mainRule.testScheduler) {
+            whitelistFlow.value = listOf(
+                artist("a1", "Hannah", isActive = true),
+                artist("a2", "Anyma", isActive = true),
+                artist("a3", "Charlotte", isActive = true),
+            )
+            // a1: 146 tracks, a2: 0 (missing key in map → default 0),
+            // a3: 700. Pins the "missing key → 0" contract.
+            trackCountsFlow.value = mapOf("a1" to 146, "a3" to 700)
+            val sut = newSut()
+            runCurrent()
+
+            val rows = sut.displayedArtists.value.filterIsInstance<ArtistRow.Whitelisted>()
+            assertThat(rows.map { it.artist.id to it.trackCount })
+                .containsExactly("a1" to 146, "a2" to 0, "a3" to 700)
+                .inOrder()
+        }
+
+    @Test fun `whitelisted row updates trackCount when the counts flow emits`() =
+        runTest(mainRule.testScheduler) {
+            // A newly-added artist starts at 0 (trickle hasn't picked it up
+            // yet); the count jumps as soon as the worker finishes its
+            // slice. This test simulates that emission and asserts the
+            // displayedArtists flow re-emits with the new count.
+            whitelistFlow.value = listOf(artist("a1", "Hannah", isActive = true))
+            val sut = newSut()
+            runCurrent()
+            assertThat(
+                sut.displayedArtists.value.filterIsInstance<ArtistRow.Whitelisted>().first().trackCount
+            ).isEqualTo(0)
+
+            trackCountsFlow.value = mapOf("a1" to 146)
+            runCurrent()
+
+            assertThat(
+                sut.displayedArtists.value.filterIsInstance<ArtistRow.Whitelisted>().first().trackCount
+            ).isEqualTo(146)
         }
 
     @Test fun `whitelisted row mirrors the underlying isActive flag`() =
@@ -72,7 +114,7 @@ class ArtistsViewModelTest {
             runCurrent()
 
             assertThat(sut.displayedArtists.value).containsExactly(
-                ArtistRow.Whitelisted(artist("a1", "Hannah", isActive = true), isActive = true),
+                ArtistRow.Whitelisted(artist("a1", "Hannah", isActive = true), isActive = true, trackCount = 0),
                 ArtistRow.SearchResult(artist("a2", "Anyma")),
                 ArtistRow.SearchResult(artist("a3", "Anna")),
             ).inOrder()

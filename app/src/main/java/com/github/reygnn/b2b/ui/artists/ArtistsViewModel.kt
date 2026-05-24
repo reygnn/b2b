@@ -34,7 +34,17 @@ import javax.inject.Inject
 sealed interface ArtistRow {
     val artist: Artist
 
-    data class Whitelisted(override val artist: Artist, val isActive: Boolean) : ArtistRow
+    /**
+     * @property trackCount Number of pool rows currently associated with
+     * this artist. Surfaced as a "name (N)" suffix on the row. `0` is a
+     * meaningful value — it signals "trickle hasn't filled this artist
+     * yet" (newly added) rather than "no data."
+     */
+    data class Whitelisted(
+        override val artist: Artist,
+        val isActive: Boolean,
+        val trackCount: Int,
+    ) : ArtistRow
     data class SearchResult(override val artist: Artist) : ArtistRow
 }
 
@@ -87,6 +97,13 @@ class ArtistsViewModel @Inject constructor(
             initialValue = emptyList(),
         )
 
+    private val trackCountsByArtist: StateFlow<Map<String, Int>> =
+        poolRepo.observeTrackCountByArtist().stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyMap(),
+        )
+
     private val _searchResults = MutableStateFlow<List<Artist>>(emptyList())
 
     private val _isSearching = MutableStateFlow(false)
@@ -102,13 +119,21 @@ class ArtistsViewModel @Inject constructor(
 
     /**
      * Merged display list. Whitelisted rows on top (most recently added
-     * first), then search hits that aren't already in the whitelist.
+     * first) with their current pool track count, then search hits that
+     * aren't already in the whitelist. An artist absent from the counts
+     * map renders as `0` — the trickle has not filled its slice yet.
      */
     val displayedArtists: StateFlow<List<ArtistRow>> = combine(
-        whitelisted, _searchResults,
-    ) { wl, sr ->
+        whitelisted, _searchResults, trackCountsByArtist,
+    ) { wl, sr, counts ->
         val whitelistedIds = wl.mapTo(mutableSetOf()) { it.id }
-        val whitelistedRows = wl.map { ArtistRow.Whitelisted(it, it.isActive) }
+        val whitelistedRows = wl.map {
+            ArtistRow.Whitelisted(
+                artist = it,
+                isActive = it.isActive,
+                trackCount = counts[it.id] ?: 0,
+            )
+        }
         val searchRows = sr
             .filter { it.id !in whitelistedIds }
             .map { ArtistRow.SearchResult(it) }

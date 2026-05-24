@@ -32,6 +32,18 @@ interface PoolRepository {
     fun observeLatestSyncEpochMs(): Flow<Long?>
 
     /**
+     * Per-artist track counts: artistId → count. Drives the "name (N)"
+     * suffix on each row of the manage-artists screen. The map only
+     * contains entries for artists that have at least one pool row;
+     * callers must treat a missing key as 0 (never-synced artist).
+     *
+     * Emits whenever any pool_track row changes — adding tracks for a
+     * newly-trickled artist, replacing a slice atomically, or pruning
+     * orphan rows all surface as a fresh map.
+     */
+    fun observeTrackCountByArtist(): Flow<Map<String, Int>>
+
+    /**
      * Wall-clock of the freshest pool row for [artistId], or `null` if the
      * artist has no rows (just added, or removed-but-not-yet-pruned).
      * The sync worker uses this to skip artists whose slice is still

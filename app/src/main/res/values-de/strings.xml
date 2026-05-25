@@ -63,6 +63,9 @@
     <string name="artists_summary">%1$d aktiv von %2$d total</string>
     <string name="rate_limit_label">Rate-Limit</string>
 
+    <string name="kill_switch_label">Spotify pausieren (Queue läuft weiter)</string>
+    <string name="kill_switch_subtitle_on">Sync &amp; Suche deaktiviert</string>
+
     <string name="ago_seconds">vor %1$ds</string>
     <string name="ago_minutes">vor %1$dmin</string>
     <string name="ago_hours">vor %1$dh</string>

@@ -27,6 +27,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -84,6 +85,7 @@ fun HomeScreen(
     val nextSync by vm.nextSyncEpochMs.collectAsState()
     val artistCounts by vm.artistCounts.collectAsState()
     val rateLimit by vm.rateLimit.collectAsState()
+    val killSwitchActive by vm.killSwitchActive.collectAsState()
     val logEntries by vm.logEntries.collectAsState()
     val traceEnabled by vm.traceEnabled.collectAsState()
     val logClearPending by vm.logClearPending.collectAsState()
@@ -147,6 +149,8 @@ fun HomeScreen(
                 nextSyncEpochMs = nextSync,
                 artistCounts = artistCounts,
                 rateLimit = rateLimit,
+                killSwitchActive = killSwitchActive,
+                onKillSwitchChange = { vm.setKillSwitch(it) },
             )
 
             Button(
@@ -317,6 +321,8 @@ private fun StatusCard(
     nextSyncEpochMs: Long?,
     artistCounts: ArtistCounts,
     rateLimit: RateLimitState?,
+    killSwitchActive: Boolean,
+    onKillSwitchChange: (Boolean) -> Unit,
 ) {
     // Tick clock once per second so "Xs ago" labels and the position-line
     // countdown stay live without tearing down the rest of the screen.
@@ -393,6 +399,33 @@ private fun StatusCard(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
+            }
+            // Kill switch row, always present so the user can flip it on
+            // pre-emptively. Subtitle only appears when on (the label by
+            // itself reads as a future action, the subtitle as a current
+            // state).
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.kill_switch_label),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (killSwitchActive) {
+                        Text(
+                            text = stringResource(R.string.kill_switch_subtitle_on),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                Switch(
+                    checked = killSwitchActive,
+                    onCheckedChange = onKillSwitchChange,
+                )
             }
         }
     }

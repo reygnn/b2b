@@ -5,6 +5,7 @@ import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
 import com.github.reygnn.b2b.domain.model.Outcome
@@ -61,14 +62,16 @@ class SyncRateLimitGuardrailsTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val killSwitchStore: KillSwitchStore = mockk(relaxed = true)
 
     @Before fun stubDefaults() {
-        // Default per-test: no recorded wait. Tests that exercise the
-        // active-skip override this with a non-null state. Stubbing
-        // explicitly (rather than relying on the relaxed mock's `.value`
-        // defaulting to null) keeps the contract obvious and isolates
-        // tests against MockK's relaxed-default behavior changing.
+        // Default per-test: no recorded wait + kill switch off. Tests that
+        // exercise either gate override these. Stubbing explicitly (rather
+        // than relying on the relaxed mock's `.value` defaulting to
+        // null/false) keeps the contract obvious and isolates tests
+        // against MockK's relaxed-default behavior changing.
         every { rateLimitStore.state() } returns MutableStateFlow<RateLimitState?>(null)
+        every { killSwitchStore.state() } returns MutableStateFlow(false)
     }
 
     // ---- 1. At most one fetch per doWork --------------------------------
@@ -196,6 +199,7 @@ class SyncRateLimitGuardrailsTest {
                 whitelistDao = dao,
                 log = mockk<LogSink>(relaxed = true),
                 rateLimitStore = rateLimitStore,
+                killSwitchStore = killSwitchStore,
                 callCounter = SpotifyCallCounter(),
             )
 
@@ -283,6 +287,7 @@ class SyncRateLimitGuardrailsTest {
             whitelistDao = dao,
             log = mockk<LogSink>(relaxed = true),
             rateLimitStore = rateLimitStore,
+            killSwitchStore = killSwitchStore,
             callCounter = SpotifyCallCounter(),
         )
     }

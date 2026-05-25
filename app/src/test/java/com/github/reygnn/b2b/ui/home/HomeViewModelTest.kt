@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.ui.home
 
 import app.cash.turbine.test
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
@@ -38,8 +39,10 @@ class HomeViewModelTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val poolSyncObserver: PoolSyncObserver = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val killSwitchStore: KillSwitchStore = mockk(relaxed = true)
     private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
     private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
+    private val killSwitchFlow = MutableStateFlow(false)
     private val serviceState = ServiceState()
     private val statusHolder = OrchestratorStatusHolder()
     private val playerStateHolder = PlayerStateHolder()
@@ -56,6 +59,7 @@ class HomeViewModelTest {
         every { poolSyncObserver.observeNextSyncEpochMs() } returns MutableStateFlow(null)
         every { artistRepo.observeWhitelist() } returns whitelistFlow
         every { rateLimitStore.state() } returns rateLimitFlow
+        every { killSwitchStore.state() } returns killSwitchFlow
     }
 
     @Test fun `toggleService sends Start when service is not running`() =
@@ -220,6 +224,7 @@ class HomeViewModelTest {
     private fun newSut() = HomeViewModel(
         orchestrator = orchestrator,
         logBuffer = logBuffer,
+        killSwitchStore = killSwitchStore,
         artistRepo = artistRepo,
         poolRepo = poolRepo,
         poolSyncObserver = poolSyncObserver,
@@ -229,4 +234,30 @@ class HomeViewModelTest {
         previewHolder = previewHolder,
         serviceState = serviceState,
     )
+
+    // ---- Kill switch ---------------------------------------------------
+
+    @Test fun `killSwitchActive mirrors the store flow`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            assertThat(sut.killSwitchActive.value).isFalse()
+            killSwitchFlow.value = true
+            assertThat(sut.killSwitchActive.value).isTrue()
+        }
+
+    @Test fun `setKillSwitch true forwards to enable`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            sut.setKillSwitch(on = true)
+            io.mockk.verify(exactly = 1) { killSwitchStore.enable() }
+            io.mockk.verify(exactly = 0) { killSwitchStore.disable() }
+        }
+
+    @Test fun `setKillSwitch false forwards to disable`() =
+        runTest(mainRule.testScheduler) {
+            val sut = newSut()
+            sut.setKillSwitch(on = false)
+            io.mockk.verify(exactly = 1) { killSwitchStore.disable() }
+            io.mockk.verify(exactly = 0) { killSwitchStore.enable() }
+        }
 }

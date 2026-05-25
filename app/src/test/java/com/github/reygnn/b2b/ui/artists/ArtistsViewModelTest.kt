@@ -1,5 +1,6 @@
 package com.github.reygnn.b2b.ui.artists
 
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -27,13 +28,16 @@ class ArtistsViewModelTest {
 
     private val artistRepo: ArtistRepository = mockk(relaxUnitFun = true)
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
+    private val killSwitchStore: KillSwitchStore = mockk(relaxed = true)
     private val whitelistFlow = MutableStateFlow<List<Artist>>(emptyList())
     private val trackCountsFlow = MutableStateFlow<Map<String, Int>>(emptyMap())
+    private val killSwitchFlow = MutableStateFlow(false)
 
     @Before fun stub() {
         coEvery { artistRepo.observeWhitelist() } returns whitelistFlow
         coEvery { poolRepo.observeTrackCountByArtist() } returns trackCountsFlow
         coEvery { poolRepo.tracksForArtist(any()) } returns emptyList()
+        io.mockk.every { killSwitchStore.state() } returns killSwitchFlow
     }
 
     @Test fun `displayedArtists renders whitelisted entries as Whitelisted rows`() =
@@ -463,7 +467,42 @@ class ArtistsViewModelTest {
             coVerify(exactly = 0) { artistRepo.addToWhitelist(a1) }
         }
 
-    private fun newSut() = ArtistsViewModel(artistRepo, poolRepo)
+    private fun newSut() = ArtistsViewModel(artistRepo, poolRepo, killSwitchStore)
+
+    // ---- Kill switch -------------------------------------------------
+
+    @Test fun `submitSearch declines HTTP when kill switch is on`() =
+        runTest(mainRule.testScheduler) {
+            // Kill switch flips before the user (or an IME-Search action)
+            // submits a query. The VM must NOT touch the repo and must
+            // surface a clear error so the screen renders feedback.
+            killSwitchFlow.value = true
+            val sut = newSut()
+
+            sut.submitSearch("anyma")
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { artistRepo.searchArtists(any()) }
+            assertThat(sut.searchError.value).isNotNull()
+        }
+
+    @Test fun `submitSearch proceeds normally when kill switch is off`() =
+        runTest(mainRule.testScheduler) {
+            // Sanity check — the regression risk on the gate is that the
+            // `if (killSwitchActive.value)` accidentally returns true for
+            // all callers and quietly kills the feature even without a
+            // penalty. This test pins the false-case.
+            coEvery { artistRepo.searchArtists("anyma") } returns
+                Outcome.Success(listOf(artist("a1", "Anyma")))
+            killSwitchFlow.value = false
+            val sut = newSut()
+
+            sut.submitSearch("anyma")
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { artistRepo.searchArtists("anyma") }
+            assertThat(sut.searchError.value).isNull()
+        }
 
     private fun artist(id: String, name: String, isActive: Boolean = true) =
         Artist(id = id, name = name, isActive = isActive)

@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
@@ -61,10 +62,25 @@ class PoolSyncWorker @AssistedInject constructor(
     private val whitelistDao: WhitelistDao,
     private val log: LogSink,
     private val rateLimitStore: RateLimitStore,
+    private val killSwitchStore: KillSwitchStore,
     private val callCounter: SpotifyCallCounter,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // Kill switch wins over everything else. User-driven gate that
+        // silences sync (and search, gated separately in ArtistsViewModel)
+        // until manually disabled from the Home status card. Auto-enabled
+        // by [RateLimitStore.record] so any 429 from any surface trips it;
+        // the user can flip it back off mid-penalty if they want.
+        //
+        // Stats emission is suppressed here for the same reason as on the
+        // rate-limit-skip branch below: this branch fires every 15 min
+        // until the user disables the switch and identical stats lines
+        // would crowd out the entries we actually want to see.
+        if (killSwitchStore.state().value) {
+            log.log("sync: kill-switch on, skipping tick")
+            return Result.success()
+        }
         // Active-skip: respect Spotify's announced wait. The previous
         // design exposed a `force=true` bypass to this gate, which
         // WorkManager preserved across backoff retries and the

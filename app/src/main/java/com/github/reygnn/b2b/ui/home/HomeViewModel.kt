@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.ui.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
@@ -39,6 +40,7 @@ import javax.inject.Inject
 class HomeViewModel @Inject constructor(
     private val orchestrator: PlaybackOrchestrator,
     private val logBuffer: LogBuffer,
+    private val killSwitchStore: KillSwitchStore,
     artistRepo: ArtistRepository,
     poolRepo: PoolRepository,
     poolSyncObserver: PoolSyncObserver,
@@ -109,6 +111,19 @@ class HomeViewModel @Inject constructor(
      * (seconds, recordedAtEpochMs) pair.
      */
     val rateLimit: StateFlow<RateLimitState?> = rateLimitStore.state()
+
+    /**
+     * Mirror of the global kill-switch state. The Home status card
+     * renders a Switch bound to this flow + [setKillSwitch]; turning it
+     * on silences `PoolSyncWorker` and `ArtistsViewModel.submitSearch`
+     * (orchestrator queue calls keep firing). Auto-flipped to true by
+     * [RateLimitStore.record] on any 429.
+     */
+    val killSwitchActive: StateFlow<Boolean> = killSwitchStore.state()
+
+    fun setKillSwitch(on: Boolean) {
+        if (on) killSwitchStore.enable() else killSwitchStore.disable()
+    }
 
     val logEntries: StateFlow<List<LogEntry>> = logBuffer.entries
     val traceEnabled: StateFlow<Boolean> = logBuffer.traceEnabled

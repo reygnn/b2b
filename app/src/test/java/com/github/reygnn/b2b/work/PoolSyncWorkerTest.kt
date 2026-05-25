@@ -3,6 +3,7 @@ package com.github.reygnn.b2b.work
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
@@ -42,14 +43,17 @@ class PoolSyncWorkerTest {
     private val poolRepo: PoolRepository = mockk(relaxUnitFun = true)
     private val dao: WhitelistDao = mockk()
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val killSwitchStore: KillSwitchStore = mockk(relaxed = true)
     private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
+    private val killSwitchFlow = MutableStateFlow(false)
 
     @Before fun stubRateLimitState() {
-        // Default: no recorded wait → active-skip is a no-op and the
-        // existing tests reach the normal trickle path. Tests that
-        // exercise the active-skip explicitly set [rateLimitFlow.value]
-        // to a non-null [RateLimitState].
+        // Default: no recorded wait + kill switch off → both gates are
+        // no-ops and the existing tests reach the normal trickle path.
+        // Tests that exercise either gate explicitly flip the
+        // corresponding flow.
         every { rateLimitStore.state() } returns rateLimitFlow
+        every { killSwitchStore.state() } returns killSwitchFlow
     }
 
     @Test fun `idle when DAO reports nothing eligible`() = runTest(mainRule.testScheduler) {
@@ -209,6 +213,25 @@ class PoolSyncWorkerTest {
             coVerify(exactly = 1) { dao.pickNextToSync(any()) }
         }
 
+    // ---- Kill switch ---------------------------------------------------
+
+    @Test fun `kill switch on skips the tick entirely`() =
+        runTest(mainRule.testScheduler) {
+            // The kill switch is checked before the rate-limit active-skip
+            // and before the DAO lookup. Even with an eligible artist
+            // queued, the tick must exit without an API call so the user-
+            // set "Spotify silent" mode actually silences sync.
+            killSwitchFlow.value = true
+            coEvery { dao.pickNextToSync(any()) } returns "a1"
+
+            val result = build().doWork()
+
+            assertThat(result).isInstanceOf(ListenableWorker.Result.Success::class.java)
+            coVerify(exactly = 0) { dao.pickNextToSync(any()) }
+            coVerify(exactly = 0) { artistRepo.fetchAllTrackUrisForArtist(any()) }
+            coVerify(exactly = 0) { rateLimitStore.clear() }
+        }
+
     private fun build(): PoolSyncWorker {
         val params = mockk<WorkerParameters>(relaxed = true)
         return PoolSyncWorker(
@@ -219,6 +242,7 @@ class PoolSyncWorkerTest {
             whitelistDao = dao,
             log = mockk<LogSink>(relaxed = true),
             rateLimitStore = rateLimitStore,
+            killSwitchStore = killSwitchStore,
             // The counter is mostly a passthrough here. The dedicated
             // SpotifyCallCounterTest exercises rolling-window semantics;
             // the worker-side stats-emission contract is pinned in

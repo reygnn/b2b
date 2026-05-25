@@ -52,10 +52,17 @@ interface RateLimitStore {
  * Plain (un-encrypted) [android.content.SharedPreferences]-backed
  * [RateLimitStore]. The rate-limit numbers are not sensitive, so we avoid
  * the AndroidKeystore overhead of [androidx.security.crypto.EncryptedSharedPreferences].
+ *
+ * Side-effect on [record]: also enables the [KillSwitchStore]. The May
+ * 2026 incidents (three penalties in four days) made it clear that a
+ * fresh 429 should silence sync + search across the whole app until the
+ * user explicitly opts back in — orchestrator queue calls stay live but
+ * are not gated here (intentionally, see [KillSwitchStore] KDoc).
  */
 @Singleton
 class RateLimitStoreImpl @Inject constructor(
     @param:ApplicationContext private val context: Context,
+    private val killSwitch: KillSwitchStore,
 ) : RateLimitStore {
 
     private val prefs by lazy {
@@ -83,6 +90,10 @@ class RateLimitStoreImpl @Inject constructor(
             .putLong(KEY_AT, atEpochMs)
             .apply()
         _state.value = state
+        // Auto-enable the kill switch on any 429 from any surface. The user
+        // can manually disable it again from the Home status card if they
+        // explicitly want to search during the penalty.
+        killSwitch.enable()
     }
 
     override fun clear() {

@@ -63,6 +63,9 @@
     <string name="artists_summary">%1$d active of %2$d total</string>
     <string name="rate_limit_label">Rate limit</string>
 
+    <string name="kill_switch_label">Pause Spotify (queue still active)</string>
+    <string name="kill_switch_subtitle_on">Sync &amp; search disabled</string>
+
     <string name="ago_seconds">%1$ds ago</string>
     <string name="ago_minutes">%1$dmin ago</string>
     <string name="ago_hours">%1$dh ago</string>

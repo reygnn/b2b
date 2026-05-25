@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.work
 
 import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
@@ -40,6 +41,9 @@ class PoolSyncWorkerStatsLineTest {
     private val dao: WhitelistDao = mockk()
     private val log: LogSink = mockk(relaxed = true)
     private val rateLimitStore: RateLimitStore = mockk(relaxed = true)
+    private val killSwitchStore: KillSwitchStore = mockk(relaxed = true) {
+        every { state() } returns MutableStateFlow(false)
+    }
     private val rateLimitFlow = MutableStateFlow<RateLimitState?>(null)
     private val counter = SpotifyCallCounter()
 
@@ -129,6 +133,7 @@ class PoolSyncWorkerStatsLineTest {
         whitelistDao = dao,
         log = log,
         rateLimitStore = rateLimitStore,
+        killSwitchStore = killSwitchStore,
         callCounter = counter,
     )
 }

@@ -2,6 +2,7 @@ package com.github.reygnn.b2b.ui.artists
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
 import com.github.reygnn.b2b.domain.model.Artist
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
@@ -83,7 +84,17 @@ data class DeletedArtistSnapshot(val artist: Artist, val tracks: List<Track>)
 class ArtistsViewModel @Inject constructor(
     private val artistRepo: ArtistRepository,
     private val poolRepo: PoolRepository,
+    killSwitchStore: KillSwitchStore,
 ) : ViewModel() {
+
+    /**
+     * Mirror of the global kill-switch state. When `true`, [submitSearch]
+     * declines to issue an HTTP call and surfaces a "search disabled"
+     * message via [searchError]; the screen also uses this flow to
+     * disable the 🔍 button. Read-only — toggling lives on the Home
+     * status card.
+     */
+    val killSwitchActive: StateFlow<Boolean> = killSwitchStore.state()
 
     /**
      * Wall-clock source for the search cache TTL and min-interval guard.
@@ -206,6 +217,16 @@ class ArtistsViewModel @Inject constructor(
             _searchError.value = null
             return
         }
+        // Kill-switch gate. Surfaces the error so the user gets feedback
+        // (the 🔍 button is also disabled in the UI when the gate is on,
+        // but an IME-action / programmatic call would otherwise reach
+        // here silently).
+        if (killSwitchActive.value) {
+            _searchResults.value = emptyList()
+            _isSearching.value = false
+            _searchError.value = SEARCH_DISABLED_MESSAGE
+            return
+        }
         val cacheKey = normalized.lowercase()
         val now = clock()
 
@@ -325,5 +346,11 @@ class ArtistsViewModel @Inject constructor(
         // without getting in the way of a deliberate "search again"
         // after a typo correction.
         const val MIN_SEARCH_INTERVAL_MS = 500L
+
+        // Surfaced in [_searchError] when the kill switch is on. Plain
+        // English so an IME-Search-action triggered call still gets
+        // useful feedback even if the visual disabled state of the 🔍
+        // button is obscured.
+        const val SEARCH_DISABLED_MESSAGE = "Search paused by kill switch"
     }
 }

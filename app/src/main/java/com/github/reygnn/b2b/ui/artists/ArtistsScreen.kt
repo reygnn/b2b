@@ -52,6 +52,7 @@ fun ArtistsScreen(
     val rows by vm.displayedArtists.collectAsState()
     val isSearching by vm.isSearching.collectAsState()
     val searchError by vm.searchError.collectAsState()
+    val killSwitchActive by vm.killSwitchActive.collectAsState()
     val deletedSnapshot by vm.deletedSnapshot.collectAsState()
 
     var query by remember { mutableStateOf("") }
@@ -113,7 +114,7 @@ fun ArtistsScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { submit() }),
                 )
-                IconButton(onClick = submit) { Text("🔍") }
+                IconButton(onClick = submit, enabled = !killSwitchActive) { Text("🔍") }
             }
 
             if (isSearching) {

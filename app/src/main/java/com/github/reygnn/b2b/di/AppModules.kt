@@ -16,6 +16,8 @@ import com.github.reygnn.b2b.data.remote.MeteringInterceptor
 import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
 import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
+import com.github.reygnn.b2b.data.repository.KillSwitchStoreImpl
 import com.github.reygnn.b2b.data.repository.PlaybackRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PoolRepositoryImpl
 import com.github.reygnn.b2b.data.repository.PoolSyncObserver
@@ -161,5 +163,6 @@ abstract class BindsModule {
     @Binds abstract fun bindPlayerStateSource(impl: AppRemotePlayerStateSource): PlayerStateSource
     @Binds abstract fun bindPoolSyncObserver(impl: WorkManagerPoolSyncObserver): PoolSyncObserver
     @Binds abstract fun bindRateLimitStore(impl: RateLimitStoreImpl): RateLimitStore
+    @Binds abstract fun bindKillSwitchStore(impl: KillSwitchStoreImpl): KillSwitchStore
     @Binds abstract fun bindLogSink(impl: LogBuffer): LogSink
 }

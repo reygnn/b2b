@@ -12,6 +12,7 @@ import com.github.reygnn.b2b.data.local.dao.RecentlyPlayedDao
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
 import com.github.reygnn.b2b.BuildConfig
 import com.github.reygnn.b2b.data.remote.AuthInterceptor
+import com.github.reygnn.b2b.data.remote.MeteringInterceptor
 import com.github.reygnn.b2b.data.remote.SpotifyAccountsApi
 import com.github.reygnn.b2b.data.remote.SpotifyApi
 import com.github.reygnn.b2b.data.repository.ArtistRepositoryImpl
@@ -96,9 +97,17 @@ object NetworkModule {
     }
 
     @Provides @Singleton
-    fun okHttp(tokenStore: TokenStore): OkHttpClient =
+    fun okHttp(
+        tokenStore: TokenStore,
+        meteringInterceptor: MeteringInterceptor,
+    ): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor(AuthInterceptor(tokenStore))
+            // Network interceptor (not application interceptor): sees each
+            // actual round-trip including AuthInterceptor's 401-retry, which
+            // is what Spotify's quota actually charges us for. See
+            // [MeteringInterceptor] for the rationale.
+            .addNetworkInterceptor(meteringInterceptor)
             .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
             .build()
 
@@ -114,8 +123,11 @@ object NetworkModule {
     fun spotifyApi(retrofit: Retrofit): SpotifyApi = retrofit.create(SpotifyApi::class.java)
 
     @Provides @Singleton @AccountsClient
-    fun accountsOkHttp(): OkHttpClient =
+    fun accountsOkHttp(meteringInterceptor: MeteringInterceptor): OkHttpClient =
         OkHttpClient.Builder()
+            // Token-refresh storms during the rate-limit incident we are
+            // chasing would otherwise be invisible — meter this client too.
+            .addNetworkInterceptor(meteringInterceptor)
             .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
             .build()
 

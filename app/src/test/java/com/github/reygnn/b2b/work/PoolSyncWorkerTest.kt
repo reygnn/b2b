@@ -6,6 +6,7 @@ import com.github.reygnn.b2b.data.local.dao.WhitelistDao
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
+import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.model.Track
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
@@ -218,6 +219,11 @@ class PoolSyncWorkerTest {
             whitelistDao = dao,
             log = mockk<LogSink>(relaxed = true),
             rateLimitStore = rateLimitStore,
+            // The counter is mostly a passthrough here. The dedicated
+            // SpotifyCallCounterTest exercises rolling-window semantics;
+            // the worker-side stats-emission contract is pinned in
+            // PoolSyncWorkerStatsLineTest where a real counter is wired in.
+            callCounter = SpotifyCallCounter(),
         )
     }
 

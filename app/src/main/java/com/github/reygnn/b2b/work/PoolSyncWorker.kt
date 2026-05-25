@@ -7,6 +7,8 @@ import androidx.work.WorkerParameters
 import com.github.reygnn.b2b.data.local.dao.WhitelistDao
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
+import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
+import com.github.reygnn.b2b.diagnostics.SpotifyCallFamily
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
@@ -59,6 +61,7 @@ class PoolSyncWorker @AssistedInject constructor(
     private val whitelistDao: WhitelistDao,
     private val log: LogSink,
     private val rateLimitStore: RateLimitStore,
+    private val callCounter: SpotifyCallCounter,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
@@ -68,6 +71,13 @@ class PoolSyncWorker @AssistedInject constructor(
         // 2026-05-22/23 incident exploited. The trickle has no such
         // override, so this check cannot be bypassed by any code path
         // currently reachable from the UI or the worker config.
+        //
+        // Stats emission is deliberately skipped on this branch: during a
+        // multi-hour penalty WorkManager fires every 15 min, and emitting
+        // an identical stats line ~80 times in a 20 h window would crowd
+        // out the entries we actually want to see (NEW-ARTISTS.md M4 is
+        // about diagnosing add-session bursts, not about wallpapering the
+        // log during a known idle wait).
         rateLimitStore.state().value?.let { state ->
             val remaining = state.remainingSecondsAt(System.currentTimeMillis())
             if (remaining > 0) {
@@ -75,6 +85,12 @@ class PoolSyncWorker @AssistedInject constructor(
                 return Result.success()
             }
         }
+        val result = runTick()
+        emitStatsIfAny()
+        return result
+    }
+
+    private suspend fun runTick(): Result {
         val floor = System.currentTimeMillis() - FRESHNESS_FLOOR_MS
         val nextId = whitelistDao.pickNextToSync(floor)
         if (nextId == null) {
@@ -112,6 +128,31 @@ class PoolSyncWorker @AssistedInject constructor(
                 Result.failure()
             }
         }
+    }
+
+    /**
+     * NEW-ARTISTS.md M4: surface the per-family Spotify call volume so a
+     * post-mortem after the next rate-limit penalty can answer the
+     * "what was our daily call rate at the time?" question without a
+     * dedicated debug screen. Skipped when nothing happened in the last
+     * 24 h to avoid a flood of `total=0` lines on quiet days.
+     */
+    private fun emitStatsIfAny() {
+        val stats = callCounter.stats(window = 24.hours)
+        val total = stats.values.sum()
+        if (total == 0) return
+        fun f(family: SpotifyCallFamily) = stats[family] ?: 0
+        log.log(
+            "stats 24h: " +
+                "search=${f(SpotifyCallFamily.SEARCH)} " +
+                "artists=${f(SpotifyCallFamily.ARTISTS)} " +
+                "albums=${f(SpotifyCallFamily.ALBUMS)} " +
+                "queue=${f(SpotifyCallFamily.QUEUE)} " +
+                "me=${f(SpotifyCallFamily.ME)} " +
+                "token=${f(SpotifyCallFamily.TOKEN)} " +
+                "other=${f(SpotifyCallFamily.OTHER)} " +
+                "total=$total",
+        )
     }
 
     companion object {

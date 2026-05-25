@@ -6,6 +6,7 @@ import com.github.reygnn.b2b.data.local.dao.WhitelistDao
 import com.github.reygnn.b2b.data.repository.RateLimitState
 import com.github.reygnn.b2b.data.repository.RateLimitStore
 import com.github.reygnn.b2b.diagnostics.LogSink
+import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
 import com.github.reygnn.b2b.domain.model.Outcome
 import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
@@ -195,6 +196,7 @@ class SyncRateLimitGuardrailsTest {
                 whitelistDao = dao,
                 log = mockk<LogSink>(relaxed = true),
                 rateLimitStore = rateLimitStore,
+                callCounter = SpotifyCallCounter(),
             )
 
             val result = worker.doWork()
@@ -281,6 +283,7 @@ class SyncRateLimitGuardrailsTest {
             whitelistDao = dao,
             log = mockk<LogSink>(relaxed = true),
             rateLimitStore = rateLimitStore,
+            callCounter = SpotifyCallCounter(),
         )
     }
 }

@@ -41,7 +41,7 @@
     <string name="status_label">Status</string>
     <string name="status_idle">Nicht gestartet</string>
     <string name="status_running">Warte auf Spotify…</string>
-    <string name="status_listening">Aktuell: %1$s — %2$s</string>
+    <string name="status_listening">%1$s — %2$s</string>
     <string name="status_enqueued">Zuletzt eingereiht: %1$s — %2$s</string>
     <string name="status_no_device">Kein aktives Spotify-Device</string>
     <string name="status_free_tier">Spotify Premium erforderlich</string>

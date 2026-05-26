@@ -15,6 +15,7 @@ import com.github.reygnn.b2b.domain.repository.ArtistRepository
 import com.github.reygnn.b2b.domain.repository.PoolRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 
 /**
@@ -174,12 +175,25 @@ class PoolSyncWorker @AssistedInject constructor(
     companion object {
         /**
          * Artists whose latest pool row is younger than this are skipped on
-         * this tick — they don't need a refresh yet. 24 h sits comfortably
-         * below the time between meaningful Spotify catalog changes for any
-         * one artist and well above the 15 min tick cadence, so steady-state
-         * runs idle whenever the whitelist is small enough that everything
-         * has been refreshed recently.
+         * this tick — they don't need a refresh yet.
+         *
+         * History: was 24 h until 2026-05-26. The 24 h floor produced a
+         * predictable daily burst — every whitelist artist re-staled
+         * roughly simultaneously every 24 h, and the trickle worked through
+         * them at one per 15 min until done. For an 11-artist whitelist
+         * this meant ~11 `/v1/artists/{id}/tracks` calls clustered in a
+         * ~2-3 h window every day. In post-penalty mode Spotify's ARTISTS
+         * quota tolerates ~10 calls per 24 h, so the 11th call in the
+         * cluster reliably tripped a fresh 23 h penalty. See ADR-0003 and
+         * `project_b2b_rate_limit_pattern_2026_05.md`.
+         *
+         * 7 d makes the steady-state burst weekly instead of daily, dropping
+         * ARTISTS volume by 7× while keeping pool freshness well within the
+         * "Spotify catalog changes per artist" timescale. Newly-added
+         * artists still get priority via the never-synced branch of
+         * [WhitelistDao.pickNextToSync] and are fetched on the very next
+         * tick — the floor only governs re-sync of already-synced artists.
          */
-        val FRESHNESS_FLOOR_MS = 24.hours.inWholeMilliseconds
+        val FRESHNESS_FLOOR_MS = 7.days.inWholeMilliseconds
     }
 }

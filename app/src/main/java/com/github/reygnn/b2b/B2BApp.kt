@@ -2,23 +2,18 @@ package com.github.reygnn.b2b
 
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
-import androidx.work.BackoffPolicy
 import androidx.work.Configuration
-import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
-import com.github.reygnn.b2b.work.PoolSyncWorkNames
-import com.github.reygnn.b2b.work.PoolSyncWorker
+import com.github.reygnn.b2b.data.repository.KillSwitchStore
+import com.github.reygnn.b2b.work.PoolSyncScheduler
 import dagger.hilt.android.HiltAndroidApp
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltAndroidApp
 class B2BApp : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
+    @Inject lateinit var killSwitchStore: KillSwitchStore
+    @Inject lateinit var poolSyncScheduler: PoolSyncScheduler
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -37,48 +32,11 @@ class B2BApp : Application(), Configuration.Provider {
             "SPOTIFY_CLIENT_ID is empty. Set it in ~/.gradle/gradle.properties " +
                 "(or the project-local gradle.properties); see README."
         }
-        schedulePoolSync()
-    }
-
-    private fun schedulePoolSync() {
-        // 15 minutes is Android's hard floor for PeriodicWorkRequest
-        // (PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS). The trickle
-        // design picks exactly one artist per tick, so any tick spacing
-        // above Spotify's documented 30 s rolling rate-limit window is safe
-        // by construction — 15 min gives a 30× safety factor without
-        // needing self-rescheduling OneTimeWorkRequest plumbing.
-        val request = PeriodicWorkRequestBuilder<PoolSyncWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(
-                Constraints.Builder()
-                    // CONNECTED, not UNMETERED: the trickle fetches at most
-                    // one artist's track URIs per 15 min tick (~5-50 KB), so
-                    // the cellular cost is negligible, but Android Auto / in-car
-                    // listening — the primary use case — runs on cellular for
-                    // hours at a stretch. UNMETERED used to silently disable
-                    // pool refresh and all M4 stats logging during exactly
-                    // those sessions.
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            // 5-minute initial backoff for Result.retry() (transient network
-            // or the rare 429 that escapes the trickle's burst-free pacing).
-            // The next periodic occurrence happens on the 15 min schedule
-            // regardless, so the backoff exists only to space out a
-            // pathological single-tick retry.
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
-            .build()
-        // UPDATE (WorkManager 2.8+): if a periodic sync is already enqueued
-        // under this unique name, adopt the new spec — interval / constraints
-        // / backoff — without cancelling the schedule. This is what makes
-        // version upgrades take effect: when 0.5.9 → 0.6.0 changed the
-        // interval from 24 h to 15 min, KEEP silently ignored the new
-        // interval because an existing schedule was present, leaving users
-        // on the old 24 h cadence. UPDATE is the right policy for "a
-        // single chain whose spec evolves with the app".
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            PoolSyncWorkNames.PERIODIC,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            request,
-        )
+        // Honor a persistent kill switch across restarts: if the user (or a
+        // prior 429 auto-flip) left it on, do not arm the worker on this
+        // launch. The next disable() will re-schedule via the scheduler.
+        if (!killSwitchStore.state().value) {
+            poolSyncScheduler.schedule()
+        }
     }
 }

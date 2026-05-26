@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.data.repository
 
 import android.content.Context
+import com.github.reygnn.b2b.work.PoolSyncScheduler
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +26,13 @@ import javax.inject.Singleton
  * gets out of the way. The trickle's own active-skip will still block
  * `PoolSyncWorker` during the announced wait regardless.
  *
+ * Both [enable] and [disable] have a side effect on the periodic
+ * [PoolSyncWorker] schedule via [PoolSyncScheduler]: enable cancels
+ * pending work so the worker does not wake every 15 min just to log
+ * "skipping tick", disable re-arms the schedule. The worker's own
+ * kill-switch check stays as a defense against in-flight ticks racing
+ * the cancel.
+ *
  * Persistence: SharedPreferences, same plain (un-encrypted) pattern as
  * [RateLimitStore]. The boolean is not sensitive; the AndroidKeystore
  * overhead would buy nothing.
@@ -38,6 +46,7 @@ interface KillSwitchStore {
 @Singleton
 class KillSwitchStoreImpl @Inject constructor(
     @param:ApplicationContext private val context: Context,
+    private val scheduler: PoolSyncScheduler,
 ) : KillSwitchStore {
 
     private val prefs by lazy {
@@ -54,12 +63,21 @@ class KillSwitchStoreImpl @Inject constructor(
         if (_state.value) return
         prefs.edit().putBoolean(KEY_ENABLED, true).apply()
         _state.value = true
+        // Cancel pending periodic work so the worker does not fire every
+        // 15 min only to log "skipping tick" and return. The worker keeps
+        // its own kill-switch check as a defense against races between a
+        // freshly-cancelled tick and one already mid-flight.
+        scheduler.cancel()
     }
 
     override fun disable() {
         if (!_state.value) return
         prefs.edit().putBoolean(KEY_ENABLED, false).apply()
         _state.value = false
+        // Re-arm the periodic schedule. `ExistingPeriodicWorkPolicy.UPDATE`
+        // inside the scheduler makes this idempotent if work was somehow
+        // still pending.
+        scheduler.schedule()
     }
 
     private companion object {

@@ -28,7 +28,7 @@ import kotlin.time.Duration.Companion.hours
  * 2026-05-22/23 incident (see ADR-0003). The trickle design eliminates the
  * burst at the architectural root: with one artist per tick, two artist
  * fetches can never share Spotify's documented 30 s rolling rate-limit
- * window — see [B2BApp.schedulePoolSync] for the 15 min cadence.
+ * window — see [PoolSyncScheduler] for the 15 min cadence.
  *
  * Selection happens in SQL via [WhitelistDao.pickNextToSync]:
  *  - active artists only,

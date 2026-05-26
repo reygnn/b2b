@@ -1,6 +1,7 @@
 package com.github.reygnn.b2b.data.remote
 
 import com.github.reygnn.b2b.data.auth.TokenStore
+import com.github.reygnn.b2b.diagnostics.LogSink
 import com.github.reygnn.b2b.diagnostics.SpotifyCallCounter
 import com.github.reygnn.b2b.diagnostics.SpotifyCallFamily
 import com.github.reygnn.b2b.support.MainDispatcherRule
@@ -38,7 +39,7 @@ class MeteringInterceptorTest {
         }
         server.start()
         val client = OkHttpClient.Builder()
-            .addNetworkInterceptor(MeteringInterceptor(counter))
+            .addNetworkInterceptor(MeteringInterceptor(counter, mockk<LogSink>(relaxed = true)))
             .build()
 
         fun hit(path: String) {
@@ -79,7 +80,7 @@ class MeteringInterceptorTest {
         server.start()
         val client = OkHttpClient.Builder()
             .addInterceptor(AuthInterceptor(tokenStore))
-            .addNetworkInterceptor(MeteringInterceptor(counter))
+            .addNetworkInterceptor(MeteringInterceptor(counter, mockk<LogSink>(relaxed = true)))
             .build()
 
         client.newCall(Request.Builder().url(server.url("/v1/me")).build()).execute().close()
@@ -99,7 +100,7 @@ class MeteringInterceptorTest {
         }
         server.start()
         val client = OkHttpClient.Builder()
-            .addNetworkInterceptor(MeteringInterceptor(counter))
+            .addNetworkInterceptor(MeteringInterceptor(counter, mockk<LogSink>(relaxed = true)))
             .build()
 
         client.newCall(Request.Builder().url(server.url("/v1/artists/x/albums")).build())

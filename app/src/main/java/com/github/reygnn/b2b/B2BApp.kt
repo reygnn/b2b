@@ -50,7 +50,14 @@ class B2BApp : Application(), Configuration.Provider {
         val request = PeriodicWorkRequestBuilder<PoolSyncWorker>(15, TimeUnit.MINUTES)
             .setConstraints(
                 Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.UNMETERED)
+                    // CONNECTED, not UNMETERED: the trickle fetches at most
+                    // one artist's track URIs per 15 min tick (~5-50 KB), so
+                    // the cellular cost is negligible, but Android Auto / in-car
+                    // listening — the primary use case — runs on cellular for
+                    // hours at a stretch. UNMETERED used to silently disable
+                    // pool refresh and all M4 stats logging during exactly
+                    // those sessions.
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
             )
             // 5-minute initial backoff for Result.retry() (transient network

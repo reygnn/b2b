@@ -1,3 +1,9 @@
+// androidx.security:security-crypto (EncryptedSharedPreferences + MasterKey) is
+// deprecated Jetpack-wide with no drop-in successor; the API still functions at
+// runtime and we keep it deliberately for this single-device app. Suppress is
+// file-scoped because the deprecated imports themselves emit warnings.
+@file:Suppress("DEPRECATION")
+
 package com.github.reygnn.b2b.data.auth
 
 import android.content.Context

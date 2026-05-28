@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.ksp)
@@ -75,7 +74,7 @@ android {
         arg("room.schemaLocation", "$projectDir/schemas")
     }
     sourceSets {
-        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        getByName("androidTest").assets.directories.add("$projectDir/schemas")
     }
 
     packaging {
@@ -91,7 +90,7 @@ kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_21)
         freeCompilerArgs.addAll(
-            "-Xjvm-default=all",
+            "-jvm-default=enable",
             "-opt-in=kotlin.RequiresOptIn",
         )
     }
